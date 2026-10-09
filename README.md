@@ -26,6 +26,16 @@ Colima must be running: this asks docker which architecture its VM runs before i
 
 The pool takes the hostname's first label unless `--pool <name>` names it; a name is lowercase letters, digits and hyphens. Registering a pool again, from here or any machine, replaces its registration, and chuggy denies the earlier one.
 
+### A personal runner
+
+A member's personal runner runs only that member's work, in the projects they allowlist for it in chuggy. A tenant administrator grants the member the right to register one; the member mints a personal registration token for the tenant through chuggy's API, `POST /api/v1/tenants/:tenant/personal-runner-registration-tokens`, then:
+
+```sh
+chuggy-darwin register --api <chuggy's origin> --token=<token> --personal
+```
+
+It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member has one personal runner in a tenant, so registering again, from here or any machine, replaces it as registering a pool again does. Every other command takes its file as it takes a pool's.
+
 ## Run
 
 Colima must be running (`colima start`, whose VM is vz with virtiofs mounts by default; other mount types are untested), with docker's context its unix socket. A job is sized against Colima's VM rather than the Mac, so start Colima with the CPUs and memory the pool's work asks for.
