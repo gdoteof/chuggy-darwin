@@ -21,7 +21,10 @@ import {
   engineFailureLine,
 } from "@chuggy/worker-core/engineErrors.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
-import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityPersonal,
+  poolLabelValue,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 
 import {
   launchAgentFileName,
@@ -196,7 +199,10 @@ export async function doctorFindings(input) {
   const findings = [];
   const credentials = await checked(findings, "pool file", async () => {
     const read = await poolCredentials(input.poolFile);
-    return [read, `${input.poolFile} names pool ${poolLabelValue(read)}`];
+    return [
+      read,
+      `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
+    ];
   });
   const config = await checked(findings, "runner configuration", async () => {
     const read = await runnerConfig(input.paths.config);

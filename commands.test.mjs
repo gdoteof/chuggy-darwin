@@ -18,7 +18,11 @@ import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { cliMain } from "./commands.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
-import { answeringFetch, registeredFixture } from "./register.fixture.mjs";
+import {
+  answeringFetch,
+  registeredFixture,
+  registeredPersonalFixture,
+} from "./register.fixture.mjs";
 import { poolRuntimeDirectory } from "./runner.mjs";
 import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
 
@@ -93,6 +97,16 @@ const registered = {
   capabilities: ["Platform:Linux:Arm64"],
 };
 
+/** What chuggy answers a personal redemption from an Apple silicon Mac with. */
+const registeredPersonal = {
+  ...registeredPersonalFixture,
+  capabilities: ["Platform:Linux:Arm64"],
+};
+
+/** The file a personal registration writes, less `.json`. */
+const personalBase =
+  "newtenant.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member";
+
 const registerArgv = [
   "register",
   "--api",
@@ -115,6 +129,7 @@ test("a call asked wrongly exits 2 with the usage", async () => {
     ["status", "extra", "--pool", "/p"],
     ["stop", "--pool", "/p"],
     ["run", "--token=t", "--pool", "/p"],
+    ["doctor", "--personal", "--pool", "/p"],
     ["register", "--pools", "/p"],
     [...registerArgv, "extra"],
   ]) {
@@ -155,6 +170,92 @@ test("register writes the pool file it redeems the token for where chuggy-linux 
   assert.match(again.out, new RegExp(`^replaced ${file}; next:`, "u"));
 });
 
+test("register --personal redeems a member's personal token for their runner's file, named for its tenant and member, asking for no pool", async (t) => {
+  const machine = await home(t);
+  const { fetch, requests } = answeringFetch(201, registeredPersonal);
+  const { status, out, err } = await called([...registerArgv, "--personal"], {
+    home: machine,
+    fetch,
+  });
+  assert.equal(status, 0, err);
+  const file = join(
+    machine,
+    ".config",
+    "chuggy",
+    "pools",
+    `${personalBase}.json`,
+  );
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; next:`,
+      `  chuggy-darwin doctor --pool ${file}`,
+      `  chuggy-darwin install-agent --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.equal(
+    requests[0].url,
+    "https://chuggy.example/api/v1/personal-runner-registrations",
+  );
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+    token: "registration-token-fixture",
+    capabilities: ["Platform:Linux:Arm64"],
+  });
+  assert.deepEqual(
+    JSON.parse(await readFile(file, "utf8")),
+    registeredPersonal,
+  );
+});
+
+test("doctor names a pool's file as a pool's, by its tenant, project and pool", async (t) => {
+  const { home: machine } = await runnerFixture(t);
+  const { fetch } = answeringFetch(201, registered);
+  assert.equal(
+    (await called(registerArgv, { home: machine, fetch })).status,
+    0,
+  );
+  const file = join(
+    machine,
+    ".config",
+    "chuggy",
+    "pools",
+    "newtenant.arbbot.shame.json",
+  );
+  const { out } = await called(["doctor", "--pool", file], { home: machine });
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}pool file: ${file.replaceAll(".", "\\.")} names pool newtenant/arbbot/shame$`,
+      "mu",
+    ),
+  );
+});
+
+test("doctor names a personal runner's file as one, by its tenant and member", async (t) => {
+  const { home: machine } = await runnerFixture(t);
+  const { fetch } = answeringFetch(201, registeredPersonal);
+  assert.equal(
+    (await called([...registerArgv, "--personal"], { home: machine, fetch }))
+      .status,
+    0,
+  );
+  const file = join(
+    machine,
+    ".config",
+    "chuggy",
+    "pools",
+    `${personalBase}.json`,
+  );
+  const { out } = await called(["doctor", "--pool", file], { home: machine });
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}pool file: ${file.replaceAll(".", "\\.")} names personal runner newtenant/28:https:%2F%2Fauth\\.chuggy\\.example%2F0f3c9a52-member$`,
+      "mu",
+    ),
+  );
+});
+
 test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 Linux whatever the Mac is", async (t) => {
   const { fetch, requests } = answeringFetch(201, registeredFixture);
   await called(registerArgv, {
@@ -191,6 +292,11 @@ test("register asked wrongly exits 2 before the token is spent", async (t) => {
       [...registerArgv, "--pool", "Shame"],
       "aarch64",
       /^--pool Shame is not a pool name/u,
+    ],
+    [
+      [...registerArgv, "--personal", "--pool", "shame"],
+      "aarch64",
+      /^--pool names a pool, and a personal runner is its member's one in the tenant/u,
     ],
     [
       ["register", "--api", "https://chuggy.example"],
@@ -321,7 +427,7 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   assert.deepEqual(requests, []);
   assert.match(
     (await called(["help"])).out,
-    /^ +chuggy-darwin register --api <origin> --token=<token> \[--pool <name>\]$/mu,
+    /^ +chuggy-darwin register --api <origin> --token=<token> \[--pool <name> \| --personal\]$/mu,
   );
 });
 
@@ -571,6 +677,38 @@ test("registering a pool its agent here runs says the agent stops until restarte
     [
       `replaced ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
       `  launchctl kickstart -k gui/${String(process.getuid?.())}/chuggy-darwin.newtenant.arbbot.shame`,
+    ].join("\n"),
+  );
+});
+
+test("registering a personal runner its agent here runs says so of the runner, and restarts the agent labelled for its file", async (t) => {
+  const machine = await home(t);
+  const argv = [...registerArgv, "--personal"];
+  const { fetch } = answeringFetch(201, registeredPersonal);
+  const PATH = await dockerPath(t);
+  const file = join(
+    machine,
+    ".config",
+    "chuggy",
+    "pools",
+    `${personalBase}.json`,
+  );
+  assert.equal((await called(argv, { home: machine, fetch })).status, 0);
+  const installed = await called(["install-agent", "--pool", file], {
+    home: machine,
+    environment: { PATH },
+  });
+  assert.equal(installed.status, 0, installed.err);
+  assert.equal(
+    installed.out.split("\n")[0],
+    `wrote ${join(machine, "Library", "LaunchAgents", `chuggy-darwin.${personalBase}.plist`)}; start it, and Colima at login, with:`,
+  );
+  const again = await called(argv, { home: machine, fetch });
+  assert.equal(
+    again.out,
+    [
+      `replaced ${file}; chuggy denies this personal runner's earlier registration, so its agent stops until it is restarted:`,
+      `  launchctl kickstart -k gui/${String(process.getuid?.())}/chuggy-darwin.${personalBase}`,
     ].join("\n"),
   );
 });

@@ -33,6 +33,20 @@ test("every pool file register names under the agent bound leaves its property l
   );
 });
 
+test("an agent is labelled for every personal runner's file register names, by name or by digest", () => {
+  const owner = "28:https://auth.chuggy.example/0f3c9a52-member";
+  const labels = ["vteng", "t".repeat(launchAgentBaseCharsMax)].map((tenant) =>
+    launchAgentLabel(
+      `/p/${registerPoolFileName({ kind: "Personal", tenant, owner }, launchAgentBaseCharsMax)}`,
+    ),
+  );
+  assert.equal(
+    labels[0],
+    "chuggy-darwin.vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member",
+  );
+  assert.match(labels[1], /^chuggy-darwin\.personal-[0-9a-f]{20}$/u);
+});
+
 test("an agent is labelled for its pool file, and a name a label is not given here is refused", () => {
   assert.equal(
     launchAgentLabel(

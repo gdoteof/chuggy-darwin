@@ -13,6 +13,7 @@ import { parseArgs } from "node:util";
 
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
+import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import {
   poolRunnerLoop,
@@ -72,10 +73,12 @@ import { runnerPaths } from "./runnerPaths.mjs";
 export const poolFileVariable = "CHUGGY_DARWIN_POOL";
 
 const usage = `usage: chuggy-darwin <command> [--pool <file>]
-       chuggy-darwin register --api <origin> --token=<token> [--pool <name>]
+       chuggy-darwin register --api <origin> --token=<token> [--pool <name> | --personal]
 
   register                redeem a registration token for a pool file, the
-                          pool named for this machine unless --pool names it
+                          pool named for this machine unless --pool names it,
+                          or with --personal a member's personal token for
+                          their personal runner's file
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -305,7 +308,8 @@ async function installAgent(call) {
 
 /**
  * Redeems a registration token and writes the pool file it answers. It takes
- * no pool file: its `--pool` is the name the pool takes. The platform it
+ * no pool file: its `--pool` is the name the pool takes, and `--personal`
+ * redeems a member's personal token, which names no pool. The platform it
  * declares is docker's VM's, which can differ from the Mac's, so docker is
  * asked once the ask is found sound, and must answer before the token is spent.
  *
@@ -348,7 +352,7 @@ async function register(host, asked) {
   ).catch(() => undefined);
   if (agent !== undefined && launchAgentPoolFile(agent) === file) {
     host.out(
-      `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
+      `${verb} ${file}; chuggy denies ${poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's"} earlier registration, so its agent stops until it is restarted:`,
     );
     host.out(`  ${launchAgentRestart({ uid: host.uid, label })}`);
     return 0;
@@ -382,6 +386,7 @@ export async function cliMain(argv, host) {
         pool: { type: "string" },
         api: { type: "string" },
         token: { type: "string" },
+        personal: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -404,7 +409,8 @@ export async function cliMain(argv, host) {
     (!registering &&
       (command === undefined ||
         values.api !== undefined ||
-        values.token !== undefined)) ||
+        values.token !== undefined ||
+        values.personal !== undefined)) ||
     (name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);
