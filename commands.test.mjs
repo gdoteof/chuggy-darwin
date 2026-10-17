@@ -32,6 +32,7 @@ import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
  * @property {string} [home]
  * @property {string} [hostname]
  * @property {string} [architecture] the docker VM's, as `docker info` names it
+ * @property {string} [arch] the Mac's own, as `process.arch` names it
  * @property {typeof globalThis.fetch} [fetch]
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  */
@@ -70,6 +71,7 @@ async function called(argv, machine = {}) {
     home: machine.home ?? "/nonexistent",
     uid: process.getuid?.() ?? -1,
     hostname: machine.hostname ?? "shame",
+    arch: machine.arch ?? "arm64",
     fetch:
       machine.fetch ??
       (async () => {
@@ -130,6 +132,8 @@ test("a call asked wrongly exits 2 with the usage", async () => {
     ["stop", "--pool", "/p"],
     ["run", "--token=t", "--pool", "/p"],
     ["doctor", "--personal", "--pool", "/p"],
+    ["run", "--host", "--pool", "/p"],
+    ["status", "--capability", "Tool:Bazel", "--pool", "/p"],
     ["register", "--pools", "/p"],
     [...registerArgv, "extra"],
   ]) {
@@ -268,6 +272,35 @@ test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 
   ]);
 });
 
+test("register --host declares the Mac's own platform after the VM's, and each --capability after both", async (t) => {
+  const declared = {
+    ...registered,
+    capabilities: [
+      "Platform:Linux:Arm64",
+      "Platform:MacOS:Arm64",
+      "Agent:Claude",
+      "Tool:Xcode",
+    ],
+  };
+  const { fetch, requests } = answeringFetch(201, declared);
+  const { status, err } = await called(
+    [
+      ...registerArgv,
+      "--host",
+      "--capability",
+      "Agent:Claude",
+      "--capability",
+      "Tool:Xcode",
+    ],
+    { home: await home(t), fetch },
+  );
+  assert.equal(status, 0, err);
+  assert.deepEqual(
+    JSON.parse(String(requests[0].init.body)).capabilities,
+    declared.capabilities,
+  );
+});
+
 test("register spends no token while docker cannot be asked", async (t) => {
   const machine = await home(t);
   const { fetch, requests } = answeringFetch(201, registered);
@@ -286,7 +319,7 @@ test("register spends no token while docker cannot be asked", async (t) => {
 test("register asked wrongly exits 2 before the token is spent", async (t) => {
   const machine = await home(t);
   const { fetch, requests } = answeringFetch(201, registered);
-  for (const [argv, architecture, line] of [
+  for (const [argv, architecture, line, arch] of [
     [registerArgv, "riscv64", /^this machine is riscv64/u],
     [
       [...registerArgv, "--pool", "Shame"],
@@ -303,10 +336,22 @@ test("register asked wrongly exits 2 before the token is spent", async (t) => {
       "aarch64",
       /^register needs --api and --token$/u,
     ],
+    [
+      [...registerArgv, "--capability", "Platform:MacOS:Arm64"],
+      "aarch64",
+      /^--capability Platform:MacOS:Arm64 names a platform, which register finds/u,
+    ],
+    [
+      [...registerArgv, "--host"],
+      "aarch64",
+      /^this Mac is ia32, and no pool runs work on the host of one$/u,
+      "ia32",
+    ],
   ]) {
     const { status, err } = await called(/** @type {string[]} */ (argv), {
       home: machine,
       architecture: /** @type {string} */ (architecture),
+      ...(arch === undefined ? {} : { arch: /** @type {string} */ (arch) }),
       fetch,
     });
     assert.equal(status, 2, String(argv));

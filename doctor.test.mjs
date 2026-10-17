@@ -86,7 +86,7 @@ test("the platform a VM runs is the one registration declares for its architectu
       { hostname: "p", arch },
     );
     assert.ok("request" in answer);
-    assert.equal(vmPlatform(arch), answer.request.capability);
+    assert.equal(vmPlatform(arch), answer.request.capabilities[0]);
   }
   assert.equal(vmPlatform("riscv64"), undefined);
 });

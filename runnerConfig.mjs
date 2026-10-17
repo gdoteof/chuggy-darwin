@@ -15,6 +15,7 @@ import { isAbsolute, relative } from "node:path";
 
 import { z } from "zod";
 
+import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 
 /** @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig */
@@ -65,6 +66,11 @@ export const runnerConfigSchema = z.strictObject({
   outputBytesMax: positiveSchema,
   environment: environmentSchema.default({}),
   network: networkSchema.default("chuggy-jobs"),
+  /**
+   * The images a job that pins none runs in, each with the capabilities its
+   * owner declares it meets: the first meeting every one the job names.
+   */
+  images: ownerImagesSchema.default([]),
 });
 
 /**

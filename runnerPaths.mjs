@@ -11,6 +11,7 @@ import { join } from "node:path";
  * @property {string} agents where launchd reads the user's agents
  * @property {string} pools the directory register writes pool files to
  * @property {string} logs where an ended job's logs are saved
+ * @property {string} jobs where a job run on the Mac itself has its directory
  * @property {string} runtime where each pool's pull credentials, env files and control socket live
  */
 
@@ -30,6 +31,7 @@ export function runnerPaths(home) {
     agents: join(library, "LaunchAgents"),
     pools: join(home, ".config", "chuggy", "pools"),
     logs: join(library, "Logs", "chuggy-darwin"),
+    jobs: join(library, "Application Support", "chuggy-darwin", "jobs"),
     runtime: join(library, "Caches", "chuggy-darwin"),
   };
 }

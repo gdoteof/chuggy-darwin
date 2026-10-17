@@ -6,12 +6,15 @@
  *
  * The machine a job is sized against, and whose platform a pool declares, is
  * the docker VM, not the Mac: Colima's VM has the CPUs, memory and
- * architecture it was started with, and docker says which.
+ * architecture it was started with, and docker says which. A pool registered
+ * with `--host` declares the Mac's platform too, and a job that pins no image
+ * and names it runs on the Mac itself, sized against the Mac.
  */
 
 import { Buffer } from "node:buffer";
 import { readdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
+import { availableParallelism, totalmem } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,6 +22,10 @@ import { z } from "zod";
 
 import { containerBackend } from "@chuggy/worker-core/containerBackend.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
+import {
+  hostBackend,
+  hostRoutedBackend,
+} from "@chuggy/worker-core/hostBackend.mjs";
 import { containerEngine } from "@chuggy/worker-core/engine.mjs";
 import {
   dockerContextArgv,
@@ -158,6 +165,22 @@ export function vmPlatform(arch) {
   return Object.hasOwn(vmPlatforms, arch) ? vmPlatforms[arch] : undefined;
 }
 
+/** The platform each Mac `process.arch` names is, as `--host` declares it. */
+const hostPlatforms = /** @type {Record<string, string>} */ ({
+  arm64: "Platform:MacOS:Arm64",
+  x64: "Platform:MacOS:Amd64",
+});
+
+/**
+ * The platform a Mac of this architecture is, or nothing for one no pool runs
+ * work on the host of.
+ *
+ * @param {string} arch as `process.arch` names one
+ */
+export function hostPlatform(arch) {
+  return Object.hasOwn(hostPlatforms, arch) ? hostPlatforms[arch] : undefined;
+}
+
 /**
  * The machine docker runs containers on: its size, as a job is sized against
  * it, and its architecture, as `process.arch` names one.
@@ -223,7 +246,9 @@ export async function runnerParts(setup, host) {
   const dockerHost = await dockerEndpoint(engine);
   const { size } = await dockerMachine(engine);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
-  const backend = containerBackend(
+  const tokenFileRefusal = (/** @type {string} */ file) =>
+    claudeTokenFileRefusal(file, { uid: host.uid, home: host.home });
+  const container = containerBackend(
     {
       engine: "docker",
       pool: credentials,
@@ -238,6 +263,7 @@ export async function runnerParts(setup, host) {
       logDir: paths.logs,
       machine: size,
       pullRetryMs,
+      images: config.images,
     },
     {
       engine,
@@ -245,9 +271,14 @@ export async function runnerParts(setup, host) {
       nowMs: Date.now,
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
-      tokenFileRefusal: (file) =>
-        claudeTokenFileRefusal(file, { uid: host.uid, home: host.home }),
+      tokenFileRefusal,
     },
+  );
+  const backend = runnerHostRouted(
+    setup,
+    container,
+    host.log,
+    tokenFileRefusal,
   );
   const power = host.power ?? powerAssertion({ log: host.log });
   const client = poolRunnerClient(
@@ -257,6 +288,44 @@ export async function runnerParts(setup, host) {
     { tokens, fetch: host.fetch },
   );
   return { runtime, socket, engine, backend, client };
+}
+
+/**
+ * The container backend, with the Mac beside it where the pool declared the
+ * Mac's platform, taking each job that pins no image and names it.
+ *
+ * @param {RunnerSetup} setup
+ * @param {ContainerBackend} container
+ * @param {(line: string) => void} log
+ * @param {(file: string) => Promise<string | undefined>} tokenFileRefusal
+ * @returns {ContainerBackend}
+ */
+function runnerHostRouted(setup, container, log, tokenFileRefusal) {
+  const { credentials, config, paths } = setup;
+  const platforms = credentials.capabilities.filter((capability) =>
+    capability.startsWith("Platform:MacOS:"),
+  );
+  if (platforms.length === 0) return container;
+  return hostRoutedBackend(
+    container,
+    hostBackend(
+      {
+        platforms,
+        directory: join(paths.jobs, poolIdentityDigest(credentials)),
+        logDir: paths.logs,
+        tokenFile: config.claudeTokenFile,
+        timeoutSecsMax: config.timeoutSecsMax,
+        outputBytesMax: config.outputBytesMax,
+        environment: config.environment,
+        machine: {
+          cpuMillis: availableParallelism() * 1000,
+          memoryMib: Math.floor(totalmem() / (1024 * 1024)),
+        },
+      },
+      { log, tokenFileRefusal },
+    ),
+    platforms,
+  );
 }
 
 /**

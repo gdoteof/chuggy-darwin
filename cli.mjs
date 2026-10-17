@@ -10,6 +10,7 @@ process.exit(
     home: homedir(),
     uid: process.getuid?.() ?? -1,
     hostname: hostname(),
+    arch: process.arch,
     fetch: globalThis.fetch,
     cli: fileURLToPath(import.meta.url),
     out: (line) => process.stdout.write(`${line}\n`),
