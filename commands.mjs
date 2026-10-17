@@ -323,7 +323,7 @@ async function installAgent(call) {
  * @param {Omit<import("@chuggy/worker-core/register.mjs").RegisterAsked, "capabilities"> & {host?: boolean | undefined, capability?: string[] | undefined}} asked each `--capability` once per token
  */
 async function register(host, { capability, host: hosted, ...named }) {
-  const asked = { ...named, capabilities: capability };
+  const asked = { ...named, capabilities: capability, host: hosted };
   const ask = registerAskedChecked(asked, host.hostname);
   if ("refused" in ask) {
     host.err(ask.refused);

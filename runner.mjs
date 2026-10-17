@@ -7,8 +7,9 @@
  * The machine a job is sized against, and whose platform a pool declares, is
  * the docker VM, not the Mac: Colima's VM has the CPUs, memory and
  * architecture it was started with, and docker says which. A pool registered
- * with `--host` declares the Mac's platform too, and a job that pins no image
- * and names it runs on the Mac itself, sized against the Mac.
+ * with `--host` declares the Mac's platform too, and its pool file says so, and
+ * a job that pins no image and names it runs on the Mac itself, sized against
+ * the Mac.
  */
 
 import { Buffer } from "node:buffer";
@@ -24,6 +25,7 @@ import { containerBackend } from "@chuggy/worker-core/containerBackend.mjs";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import {
   hostBackend,
+  hostPlatformsDeclared,
   hostRoutedBackend,
 } from "@chuggy/worker-core/hostBackend.mjs";
 import { containerEngine } from "@chuggy/worker-core/engine.mjs";
@@ -291,8 +293,9 @@ export async function runnerParts(setup, host) {
 }
 
 /**
- * The container backend, with the Mac beside it where the pool declared the
- * Mac's platform, taking each job that pins no image and names it.
+ * The container backend, with the Mac beside it where the pool was registered
+ * with `--host`, taking each job that pins no image and names the Mac's
+ * platform.
  *
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
@@ -302,9 +305,7 @@ export async function runnerParts(setup, host) {
  */
 function runnerHostRouted(setup, container, log, tokenFileRefusal) {
   const { credentials, config, paths } = setup;
-  const platforms = credentials.capabilities.filter((capability) =>
-    capability.startsWith("Platform:MacOS:"),
-  );
+  const platforms = hostPlatformsDeclared(credentials, "MacOS");
   if (platforms.length === 0) return container;
   return hostRoutedBackend(
     container,

@@ -109,6 +109,7 @@ test("a pool registered with --host takes a job that pins no image and names the
     JSON.stringify({
       ...fixturePool,
       capabilities: ["Platform:Linux:Arm64", "Platform:MacOS:Arm64"],
+      host: true,
     }),
   );
   const { engine, state } = fakeEngine();

@@ -272,7 +272,7 @@ test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 
   ]);
 });
 
-test("register --host declares the Mac's own platform after the VM's, and each --capability after both", async (t) => {
+test("register --host declares the Mac's own platform after the VM's and writes host into the pool file, and each --capability after both", async (t) => {
   const declared = {
     ...registered,
     capabilities: [
@@ -283,6 +283,7 @@ test("register --host declares the Mac's own platform after the VM's, and each -
     ],
   };
   const { fetch, requests } = answeringFetch(201, declared);
+  const machine = await home(t);
   const { status, err } = await called(
     [
       ...registerArgv,
@@ -292,12 +293,27 @@ test("register --host declares the Mac's own platform after the VM's, and each -
       "--capability",
       "Tool:Xcode",
     ],
-    { home: await home(t), fetch },
+    { home: machine, fetch },
   );
   assert.equal(status, 0, err);
   assert.deepEqual(
     JSON.parse(String(requests[0].init.body)).capabilities,
     declared.capabilities,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      await readFile(
+        join(
+          machine,
+          ".config",
+          "chuggy",
+          "pools",
+          "newtenant.arbbot.shame.json",
+        ),
+        "utf8",
+      ),
+    ),
+    { ...declared, host: true },
   );
 });
 
