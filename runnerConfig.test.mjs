@@ -15,12 +15,13 @@ import { ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
-test("the runner keeps its file, agents, logs, host jobs and runtime where a Mac keeps each, and pool files where chuggy-linux does", () => {
+test("the runner keeps its file, agents, logs, host jobs and runtime where a Mac keeps each, and pool files and sign-ins where chuggy-linux does", () => {
   assert.deepEqual(runnerPaths("/Users/shame"), {
     config:
       "/Users/shame/Library/Application Support/chuggy-darwin/runner.json",
     agents: "/Users/shame/Library/LaunchAgents",
     pools: "/Users/shame/.config/chuggy/pools",
+    signIns: "/Users/shame/.config/chuggy/sign-ins",
     logs: "/Users/shame/Library/Logs/chuggy-darwin",
     jobs: "/Users/shame/Library/Application Support/chuggy-darwin/jobs",
     runtime: "/Users/shame/Library/Caches/chuggy-darwin",

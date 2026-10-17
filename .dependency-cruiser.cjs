@@ -30,7 +30,7 @@ module.exports = {
       to: {
         path: "^(?![^/]+\\.mjs$)",
         pathNot:
-          "(^|/)node_modules/(@chuggy/worker-core|@chuggy/worker-contract|zod)/",
+          "(^|/)node_modules/(@chuggy/worker-core|@chuggy/worker-contract|@modelcontextprotocol/sdk|zod)/",
         dependencyTypesNot: ["core"],
       },
     },

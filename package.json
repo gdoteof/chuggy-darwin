@@ -14,11 +14,13 @@
   "dependencies": {
     "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.9.0/chuggy-worker-contract-1.9.0.tgz",
     "@chuggy/worker-core": "github:kasofsk/chuggy-common#ae81e4aecef837636cc0e61c627c43131f28ce15",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "4.5.4"
   },
   "bundleDependencies": [
     "@chuggy/worker-contract",
     "@chuggy/worker-core",
+    "@modelcontextprotocol/sdk",
     "zod"
   ],
   "devDependencies": {
@@ -35,6 +37,7 @@
     "commands.mjs",
     "doctor.mjs",
     "launchAgent.mjs",
+    "mcp.mjs",
     "power.mjs",
     "runner.mjs",
     "runnerConfig.mjs",
