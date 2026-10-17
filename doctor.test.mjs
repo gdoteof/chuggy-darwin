@@ -6,16 +6,17 @@ import { registerRequest } from "@chuggy/worker-core/register.mjs";
 import { doctorFindings, findingLine } from "./doctor.mjs";
 import { fakeEngine } from "./engine.fixture.mjs";
 import { vmPlatform } from "./runner.mjs";
-import { runnerFixture } from "./runner.fixture.mjs";
+import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
 /**
  * @param {import("node:test").TestContext} t
  * @param {{architecture?: string}} [vm]
+ * @param {Parameters<typeof runnerFixture>[1]} [documents]
  */
-async function doctored(t, vm = {}) {
-  const { home, poolFile, paths } = await runnerFixture(t);
+async function doctored(t, vm = {}, documents = {}) {
+  const { home, poolFile, paths } = await runnerFixture(t, documents);
   const { engine, state } = fakeEngine();
   state.machine = {
     ...state.machine,
@@ -63,6 +64,29 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    plane",
     ],
   );
+});
+
+test("a pool registered with --host fails doctor where the runner's file names what a host job's places set", async (t) => {
+  const pool = {
+    ...fixturePool,
+    capabilities: [...fixturePool.capabilities, "Platform:MacOS:Arm64"],
+    host: true,
+  };
+  const hosted = (/** @type {string[]} */ lines) =>
+    lines.find((line) => line.includes("host jobs"));
+  assert.match(String(hosted(await doctored(t, {}, { pool }))), /^ok /u);
+  const refused = hosted(
+    await doctored(
+      t,
+      {},
+      {
+        pool,
+        runner: { environment: { HOME: "/Users/someone" } },
+      },
+    ),
+  );
+  assert.match(String(refused), /HOME is set for every host job/u);
+  assert.equal(hosted(await doctored(t)), undefined);
 });
 
 test("a VM started again with another architecture than the pool registered fails the platform check", async (t) => {

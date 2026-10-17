@@ -52,7 +52,7 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 }
 ```
 
-`claudeTokenFile` is where `claude setup-token`'s output was saved: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`) and `images` (none) are optional.
+`claudeTokenFile` is where `claude setup-token`'s output was saved: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`) and `images` (none) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
 
 ```sh
 chuggy-darwin run --pool ~/.config/chuggy/pools/<file>  # until the plane denies the pool

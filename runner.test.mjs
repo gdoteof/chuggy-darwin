@@ -132,7 +132,7 @@ test("a pool registered with --host takes a job that pins no image and names the
   );
   assert.match(
     contained.evidence ?? "",
-    /no image this pool's owner listed declares every capability it names/u,
+    /no image this pool's owner listed meets it/u,
   );
   assert.equal(state.calls.length, calls);
   assert.deepEqual(runner.backend.inFlight(), []);
