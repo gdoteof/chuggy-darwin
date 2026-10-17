@@ -7,7 +7,7 @@ It needs Node 24 or later, the docker CLI and Colima: `brew install node docker 
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.1.0/chuggy-darwin-0.1.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.2.0/chuggy-darwin-0.2.0.tgz
 ```
 
 One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`.

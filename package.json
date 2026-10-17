@@ -1,6 +1,6 @@
 {
   "name": "chuggy-darwin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Runs a chuggy worker pool's jobs in containers on a Mac",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@chuggy/worker-contract": "https://github.com/kasofsk/chuggy/releases/download/worker-contract-v1.8.0/chuggy-worker-contract-1.8.0.tgz",
-    "@chuggy/worker-core": "github:kasofsk/chuggy-common#b5c65942a15c59e9ef6019218a645803ebad6d6f",
+    "@chuggy/worker-core": "github:kasofsk/chuggy-common#781f68bba90e238dbd1d7b560f88c4616a81c18e",
     "zod": "4.5.4"
   },
   "bundleDependencies": [
