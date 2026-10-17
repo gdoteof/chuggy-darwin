@@ -35,7 +35,7 @@ export async function ownerOnly(file, text) {
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{runner?: Record<string, unknown> | undefined}} documents
+ * @param {{runner?: Record<string, unknown> | undefined, pool?: Record<string, unknown>}} documents
  */
 export async function runnerFixture(t, documents = {}) {
   const home = await mkdtemp("/tmp/cdh-");
@@ -43,7 +43,7 @@ export async function runnerFixture(t, documents = {}) {
   const paths = runnerPaths(home);
   const poolFile = await ownerOnly(
     join(paths.pools, "vteng.chuggy.shame.json"),
-    JSON.stringify(fixturePool),
+    JSON.stringify(documents.pool ?? fixturePool),
   );
   const tokenFile = await ownerOnly(
     join(home, ".claude-token"),

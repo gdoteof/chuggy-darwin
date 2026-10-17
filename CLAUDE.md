@@ -1,6 +1,6 @@
 # chuggy-darwin — working notes
 
-A Mac's worker pool for chuggy, being built after chuggy-linux: a CLI that registers the machine as a pool and runs the pool loop, under a launchd agent, from the worker core (`@chuggy/worker-core`, kasofsk/chuggy-common) over its container backend, through docker on a Linux VM. `README.md` is the operator's page.
+A Mac's worker pool for chuggy, being built after chuggy-linux: a CLI that registers the machine as a pool and runs the pool loop, under a launchd agent, from the worker core (`@chuggy/worker-core`, kasofsk/chuggy-common) over its container backend, through docker on a Linux VM, and its host backend for a pool registered with `--host`. `README.md` is the operator's page.
 
 ## Where the knowledge is
 

@@ -15,13 +15,14 @@ import { ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
-test("the runner keeps its file, agents, logs and runtime where a Mac keeps each, and pool files where chuggy-linux does", () => {
+test("the runner keeps its file, agents, logs, host jobs and runtime where a Mac keeps each, and pool files where chuggy-linux does", () => {
   assert.deepEqual(runnerPaths("/Users/shame"), {
     config:
       "/Users/shame/Library/Application Support/chuggy-darwin/runner.json",
     agents: "/Users/shame/Library/LaunchAgents",
     pools: "/Users/shame/.config/chuggy/pools",
     logs: "/Users/shame/Library/Logs/chuggy-darwin",
+    jobs: "/Users/shame/Library/Application Support/chuggy-darwin/jobs",
     runtime: "/Users/shame/Library/Caches/chuggy-darwin",
   });
 });
@@ -32,6 +33,7 @@ test("the runner's file takes the limits' defaults, and refuses an engine, since
   assert.equal(config.concurrencyMax, 1);
   assert.equal(config.sessionsMax, 2);
   assert.equal(config.network, "chuggy-jobs");
+  assert.deepEqual(config.images, []);
   const engined = await runnerFixture(t, { runner: { engine: "docker" } });
   await assert.rejects(runnerConfig(engined.paths.config), /engine/u);
 });
@@ -128,6 +130,10 @@ test("what the file may not say is refused, naming where", async (t) => {
     [
       { environment: { NAME: "a\nB=c" } },
       /environment\.NAME may not break a line/u,
+    ],
+    [
+      { images: [{ image: "x", capabilities: ["Platform:Linux:Arm64"] }] },
+      /images\.0\.capabilities\.0 names a platform/u,
     ],
   ];
   for (const [runner, line] of refused) {

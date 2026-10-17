@@ -42,6 +42,7 @@ import {
 } from "./launchAgent.mjs";
 import {
   dockerMachine,
+  hostPlatform,
   jobNetwork,
   runnerDirectories,
   runnerLeftoversRemoved,
@@ -59,6 +60,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} home
  * @property {number} uid
  * @property {string} hostname
+ * @property {string} arch this Mac's own, as `process.arch` names it
  * @property {typeof globalThis.fetch} fetch
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run uses and registration asks, when not docker
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
@@ -74,11 +76,14 @@ export const poolFileVariable = "CHUGGY_DARWIN_POOL";
 
 const usage = `usage: chuggy-darwin <command> [--pool <file>]
        chuggy-darwin register --api <origin> --token=<token> [--pool <name> | --personal]
+                              [--host] [--capability <token>]...
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
-                          their personal runner's file
+                          their personal runner's file; it declares the VM's
+                          platform, with --host this Mac's too, and each
+                          --capability, which the token must permit
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -312,20 +317,30 @@ async function installAgent(call) {
  * redeems a member's personal token, which names no pool. The platform it
  * declares is docker's VM's, which can differ from the Mac's, so docker is
  * asked once the ask is found sound, and must answer before the token is spent.
+ * `--host` declares the Mac's own platform beside it.
  *
  * @param {CliHost} host
- * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
+ * @param {Omit<import("@chuggy/worker-core/register.mjs").RegisterAsked, "capabilities"> & {host?: boolean | undefined, capability?: string[] | undefined}} asked each `--capability` once per token
  */
-async function register(host, asked) {
+async function register(host, { capability, host: hosted, ...named }) {
+  const asked = { ...named, capabilities: capability, host: hosted };
   const ask = registerAskedChecked(asked, host.hostname);
   if ("refused" in ask) {
     host.err(ask.refused);
+    return 2;
+  }
+  const platform = hostPlatform(host.arch);
+  if (hosted === true && platform === undefined) {
+    host.err(
+      `this Mac is ${host.arch}, and no pool runs work on the host of one`,
+    );
     return 2;
   }
   const { arch } = await dockerMachine(host.engine ?? runnerEngine());
   const requested = registerRequest(asked, {
     hostname: host.hostname,
     arch,
+    ...(hosted === true ? { hosted: [/** @type {string} */ (platform)] } : {}),
   });
   if ("refused" in requested) {
     host.err(requested.refused);
@@ -387,6 +402,8 @@ export async function cliMain(argv, host) {
         api: { type: "string" },
         token: { type: "string" },
         personal: { type: "boolean" },
+        host: { type: "boolean" },
+        capability: { type: "string", multiple: true },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -410,7 +427,9 @@ export async function cliMain(argv, host) {
       (command === undefined ||
         values.api !== undefined ||
         values.token !== undefined ||
-        values.personal !== undefined)) ||
+        values.personal !== undefined ||
+        values.host !== undefined ||
+        values.capability !== undefined)) ||
     (name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);

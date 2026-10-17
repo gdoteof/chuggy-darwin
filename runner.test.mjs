@@ -96,6 +96,49 @@ test("a run's backend refuses an assignment while the token file lies outside th
   assert.equal(state.calls.length, calls);
 });
 
+test("a pool registered with --host takes a job that pins no image and names the Mac's platform on the Mac, and leaves every other to its containers", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t, {
+    runner: {
+      images: [
+        { image: "ghcr.io/owner/swift:6", capabilities: ["Tool:Swift"] },
+      ],
+    },
+  });
+  await ownerOnly(
+    poolFile,
+    JSON.stringify({
+      ...fixturePool,
+      capabilities: ["Platform:Linux:Arm64", "Platform:MacOS:Arm64"],
+      host: true,
+    }),
+  );
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    uid: ownUid + 1,
+    home,
+    log: () => undefined,
+    engine,
+  });
+  const imageless = { ...assignment(), image: undefined };
+  const calls = state.calls.length;
+  const hosted = await runner.backend.place(
+    { ...imageless, capabilities: ["Platform:MacOS:Arm64", "Tool:Xcode"] },
+    "Job",
+  );
+  assert.match(hosted.evidence ?? "", /not by this runner's uid/u);
+  const contained = await runner.backend.place(
+    { ...imageless, capabilities: ["Platform:Linux:Arm64", "Tool:Xcode"] },
+    "Job",
+  );
+  assert.match(
+    contained.evidence ?? "",
+    /no image this pool's owner listed meets it/u,
+  );
+  assert.equal(state.calls.length, calls);
+  assert.deepEqual(runner.backend.inFlight(), []);
+  assert.ok(paths.jobs.startsWith(home));
+});
+
 test("docker's machine is its VM's size and architecture, named as Node names one, and refused when docker cannot be asked or answers something else", async () => {
   const { engine, state } = fakeEngine();
   assert.deepEqual(await dockerMachine(engine), {
