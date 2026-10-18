@@ -83,3 +83,11 @@ chuggy-darwin install-agent --pool <file>
 This writes `~/Library/LaunchAgents/chuggy-darwin.<pool file less .json>.plist`, which runs `run` for that pool file under the `node` and with the PATH of this shell, since launchd's own PATH finds no Homebrew docker; it takes the link on PATH, such as `/opt/homebrew/bin/node`, which an upgrade keeps. It takes no other variable, so a `DOCKER_HOST` or `DOCKER_CONTEXT` set in the shell does not reach the agent, which uses docker's current context. It prints how to load it. launchd starts the agent when the user logs in to the Mac's desktop, and again after any exit but 0, after a pause, so an agent started before Colima tries again; a pool the plane denied stays down. It runs only while the user is logged in. Its output goes to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<pool file less .json>.log`. `brew services start colima` starts Colima at login too.
 
 Registering a pool its agent serves again replaces the registration the agent holds, so `register` prints the `launchctl kickstart` that restarts it.
+
+## Tools for your coding agent
+
+```sh
+claude mcp add chuggy -- chuggy-darwin mcp --site <origin> --workspace <workspace> --project <project>
+```
+
+`mcp` serves a coding agent on this Mac the `chuggy` tools a session pod has, for one project: it reads, drafts and releases tickets under your own sign-in, and decides nothing. It takes no pool file. The first call with no sign-in answers with the site's sign-in address for the agent to hand you; the sign-in returns to a page `mcp` holds on `127.0.0.1`, so it is opened in a browser on this Mac. Once you sign in, calls go through, and the token is renewed ahead of its expiry. The renewal token is kept in `~/.config/chuggy/sign-ins`, in a file only you can read, one per site, shared by every chat on the Mac.

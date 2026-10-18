@@ -12,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
+import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
@@ -30,6 +31,7 @@ import {
 } from "@chuggy/worker-core/register.mjs";
 
 import { doctorFindings, findingLine } from "./doctor.mjs";
+import { mcpServed } from "./mcp.mjs";
 import {
   launchAgentBaseCharsMax,
   launchAgentCommands,
@@ -77,6 +79,7 @@ export const poolFileVariable = "CHUGGY_DARWIN_POOL";
 const usage = `usage: chuggy-darwin <command> [--pool <file>]
        chuggy-darwin register --api <origin> --token=<token> [--pool <name> | --personal]
                               [--host] [--capability <token>]...
+       chuggy-darwin mcp --site <origin> --workspace <workspace> --project <project>
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
@@ -91,6 +94,8 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
   stop <assignment>       stop one assignment's container
   doctor                  check everything a run needs
   install-agent           write the launchd agent that runs \`run\`
+  mcp                     serve chuggy's tools for one project to a coding
+                          agent on stdio, under your own sign-in
 
 The pool file is --pool, or ${poolFileVariable}.`;
 
@@ -378,6 +383,46 @@ async function register(host, { capability, host: hosted, ...named }) {
   return 0;
 }
 
+/** The options only `mcp` takes. */
+const mcpOptions = ["site", "workspace", "project"];
+
+/**
+ * Serves the tools for one project. It takes no pool file, and every other
+ * command's options are asked wrongly here.
+ *
+ * @param {CliHost} host
+ * @param {Record<string, unknown>} values
+ * @param {readonly string[]} positionals
+ */
+async function mcp(host, values, positionals) {
+  const { site, workspace, project, ...others } = values;
+  const asked =
+    /** @type {{site?: string, workspace?: string, project?: string}} */ ({
+      site,
+      workspace,
+      project,
+    });
+  if (positionals.length > 0 || Object.keys(others).length > 0) {
+    host.err(usage);
+    return 2;
+  }
+  const refused = localToolAskRefusal(asked);
+  if (refused !== undefined) {
+    host.err(`${refused}\n${usage}`);
+    return 2;
+  }
+  try {
+    return await mcpServed(
+      host,
+      runnerPaths(host.home).signIns,
+      /** @type {{site: string, workspace: string, project: string}} */ (asked),
+    );
+  } catch (failure) {
+    host.err(failure instanceof Error ? failure.message : String(failure));
+    return 1;
+  }
+}
+
 const commands = {
   run,
   once,
@@ -404,6 +449,9 @@ export async function cliMain(argv, host) {
         personal: { type: "boolean" },
         host: { type: "boolean" },
         capability: { type: "string", multiple: true },
+        site: { type: "string" },
+        workspace: { type: "string" },
+        project: { type: "string" },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -418,6 +466,7 @@ export async function cliMain(argv, host) {
     host.out(usage);
     return 0;
   }
+  if (name === "mcp") return await mcp(host, values, positionals);
   const registering = name === "register";
   const command = Object.hasOwn(commands, name ?? "")
     ? commands[/** @type {keyof typeof commands} */ (name)]
@@ -430,6 +479,7 @@ export async function cliMain(argv, host) {
         values.personal !== undefined ||
         values.host !== undefined ||
         values.capability !== undefined)) ||
+    mcpOptions.some((option) => values[option] !== undefined) ||
     (name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);
