@@ -1,6 +1,6 @@
 {
   "name": "chuggy-darwin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Runs a chuggy worker pool's jobs in containers on a Mac",
   "license": "MIT",
   "type": "module",
