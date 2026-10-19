@@ -135,6 +135,21 @@ export function launchAgentPoolFile(plist) {
 }
 
 /**
+ * The PATH an agent this runner wrote runs the runner with, read back from its
+ * environment, or nothing for a property list it did not write.
+ *
+ * @param {string} plist the property list's text
+ * @returns {string | undefined}
+ */
+export function launchAgentPath(plist) {
+  const path =
+    /<key>EnvironmentVariables<\/key>\s*<dict>\s*<key>PATH<\/key>\s*<string>([^<]*)<\/string>/u.exec(
+      plist,
+    )?.[1];
+  return path === undefined ? undefined : xmlUnescaped(path);
+}
+
+/**
  * One argument of a command the operator is told to run, quoted for a POSIX
  * shell unless it holds only characters no shell reads specially.
  *

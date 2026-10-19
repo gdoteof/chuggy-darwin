@@ -10,6 +10,11 @@
  * with `--host` declares the Mac's platform too, and its pool file says so, and
  * a job that pins no image and names it runs on the Mac itself, sized against
  * the Mac.
+ *
+ * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
+ * the runner's file names `claudeTokenFile`. The core withholds what would
+ * choose another credential only from a workload told one, so a run that told
+ * none would let a variable its jobs inherit outrank the token.
  */
 
 import { Buffer } from "node:buffer";
@@ -47,7 +52,11 @@ import {
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { powerAssertion, poweredBackend } from "./power.mjs";
-import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
+import {
+  claudeCredentialFileRefusal,
+  runnerClaudeHanded,
+  runnerConfig,
+} from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
@@ -238,7 +247,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion}} host this process's uid and home, where its log lines go, the engine and token source when not docker and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, and the power assertion when not caffeinate
+ * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn}} host this process's uid and home, where its log lines go, the engine and token source when not docker and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, and what starts a job on the Mac itself when not Node's own `spawn`
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -249,13 +258,17 @@ export async function runnerParts(setup, host) {
   const dockerHost = await dockerEndpoint(engine);
   const { size } = await dockerMachine(engine);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
+  const claude = runnerClaudeHanded(config);
   const tokenFileRefusal = (/** @type {string} */ file) =>
-    claudeTokenFileRefusal(file, { uid: host.uid, home: host.home });
+    claudeCredentialFileRefusal(claude.claudeCredential, file, {
+      uid: host.uid,
+      home: host.home,
+    });
   const container = containerBackend(
     {
       engine: "docker",
       pool: credentials,
-      tokenFile: config.claudeTokenFile,
+      ...claude,
       registryHost: credentials.registryHost,
       dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
@@ -277,12 +290,11 @@ export async function runnerParts(setup, host) {
       tokenFileRefusal,
     },
   );
-  const backend = runnerHostRouted(
-    setup,
-    container,
-    host.log,
+  const backend = runnerHostRouted(setup, container, claude, {
+    log: host.log,
     tokenFileRefusal,
-  );
+    ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
+  });
   const power = host.power ?? powerAssertion({ log: host.log });
   const client = poolRunnerClient(
     credentials,
@@ -300,11 +312,11 @@ export async function runnerParts(setup, host) {
  *
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
- * @param {(line: string) => void} log
- * @param {(file: string) => Promise<string | undefined>} tokenFileRefusal
+ * @param {ReturnType<typeof runnerClaudeHanded>} claude
+ * @param {import("@chuggy/worker-core/hostBackend.mjs").HostBackendSeams} seams
  * @returns {ContainerBackend}
  */
-function runnerHostRouted(setup, container, log, tokenFileRefusal) {
+function runnerHostRouted(setup, container, claude, seams) {
   const { credentials, config, paths } = setup;
   const platforms = hostPlatformsDeclared(credentials, "MacOS");
   if (platforms.length === 0) return container;
@@ -315,7 +327,7 @@ function runnerHostRouted(setup, container, log, tokenFileRefusal) {
         platforms,
         directory: join(paths.jobs, poolIdentityDigest(credentials)),
         logDir: paths.logs,
-        tokenFile: config.claudeTokenFile,
+        ...claude,
         timeoutSecsMax: config.timeoutSecsMax,
         outputBytesMax: config.outputBytesMax,
         environment: config.environment,
@@ -324,7 +336,7 @@ function runnerHostRouted(setup, container, log, tokenFileRefusal) {
           memoryMib: Math.floor(totalmem() / (1024 * 1024)),
         },
       },
-      { log, tokenFileRefusal },
+      seams,
     ),
     platforms,
   );

@@ -30,7 +30,7 @@ import {
   registerRequest,
 } from "@chuggy/worker-core/register.mjs";
 
-import { doctorFindings, findingLine } from "./doctor.mjs";
+import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
   launchAgentBaseCharsMax,
@@ -213,6 +213,8 @@ async function doctor(call) {
     paths: runnerPaths(call.host.home),
     uid: call.host.uid,
     home: call.host.home,
+    path: call.host.environment.PATH,
+    claudeVersion: claudeVersionAsked,
     parts: {
       engine: () => call.host.engine ?? runnerEngine(),
       tokens: (credentials) =>

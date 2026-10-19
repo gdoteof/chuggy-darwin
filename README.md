@@ -52,7 +52,24 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 }
 ```
 
-`claudeTokenFile` is where `claude setup-token`'s output was saved: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`) and `images` (none) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
+`claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`) and `images` (none) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
+
+```json
+"claudeCredential": { "kind": "Subscription", "tokenFile": "/Users/you/.config/chuggy/claude-token" }
+"claudeCredential": { "kind": "ApiKey", "apiKeyFile": "/Users/you/.config/chuggy/anthropic-api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "apiKeyFile": "/Users/you/.config/chuggy/bedrock-api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "credentialsFile": "/Users/you/.config/chuggy/aws-credentials", "profile": "chuggy" }
+"claudeCredential": { "kind": "Vertex", "region": "us-east5", "project": "your-project", "credentialsFile": "/Users/you/.config/chuggy/vertex-key.json" }
+"claudeCredential": { "kind": "Foundry", "resource": "your-resource", "apiKeyFile": "/Users/you/.config/chuggy/foundry-api-key" }
+```
+
+- **Subscription**: `claude setup-token`'s output, alone. Jobs share your Claude plan's limits.
+- **ApiKey**: a key from the Claude Console, alone. It must be scoped to a workspace: the API refuses an unscoped key unless the request names a workspace in an `anthropic-workspace-id` header, and a job's Claude Code is never handed `ANTHROPIC_CUSTOM_HEADERS`, the variable that could add one.
+- **Bedrock**: the AWS region, and a Bedrock API key alone, or an AWS credentials file whose `profile`, `default` where none is named, holds an access key's `aws_access_key_id` and `aws_secret_access_key`. SSO, role and `credential_process` profiles are not read.
+- **Vertex**: the region, the Google Cloud project, and the JSON key Google Cloud made for a service account.
+- **Foundry**: the Foundry resource and one of its keys, alone. Name its deployments in `environment`, as `ANTHROPIC_DEFAULT_SONNET_MODEL` and its like.
+
+The credential is one file: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. Every job and session is told the kind, and handed the file, mounted read-only into a container or read where it is by a job on the Mac itself. A run never reads it. `doctor` alone does, printing only its kind and settings, and every secret in it is scrubbed from what a job or session reports. Claude Code is told its credential is the runner's, so a checkout's own settings choose no other provider and send the credential nowhere else. It is handed only the credential `claudeCredential` or `claudeTokenFile` names: a variable in `environment` that would choose another or where it is sent, such as `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` or, beside Bedrock, `AWS_PROFILE`, reaches the commands a job runs for the project, its checks among them, but never Claude Code or a command it runs. Every kind but Subscription is billed by its provider.
 
 ```sh
 chuggy-darwin run --pool ~/.config/chuggy/pools/<file>  # until the plane denies the pool
@@ -74,7 +91,7 @@ A task that pins no image names capabilities instead, and this runner meets them
 "images": [{ "image": "ghcr.io/you/swift:6", "capabilities": ["Agent:Claude", "Tool:Swift"] }]
 ```
 
-On a pool registered with `--host`, a job naming the Mac's platform runs on the Mac itself: as you, in a directory of its own under `~/Library/Application Support/chuggy-darwin/jobs/`, with its own `HOME` and temporary directory, the run's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the run's `PATH`, which for an agent is the shell's `install-agent` was run from. It is sized against the Mac, not the VM. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever the Mac reaches; register with `--host` only a Mac whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, or when the runner is stopped; its log is saved beside a container's, and its directory is removed when it ends. A runner killed outright, by `SIGKILL` or the kernel, leaves its host jobs running until they end.
+On a pool registered with `--host`, a job naming the Mac's platform runs on the Mac itself: as you, in a directory of its own under `~/Library/Application Support/chuggy-darwin/jobs/`, with its own `HOME` and temporary directory, the run's environment and `environment`, and `git` and its agent's command, such as `claude`, found on the run's `PATH`, which for an agent is the shell's `install-agent` was run from. `doctor` names the `claude` such a job runs, and its version. It is sized against the Mac, not the VM. Nothing isolates it. It can read and change whatever you can, the other jobs here among it, and reach whatever the Mac reaches; register with `--host` only a Mac whose every project you trust that far. A session, and a job that pins an image, still runs in a container. A host job is killed, with every process it started, at the sooner of `timeoutSecsMax` and its deadline, or when the runner is stopped; its log is saved beside a container's, and its directory is removed when it ends. A runner killed outright, by `SIGKILL` or the kernel, leaves its host jobs running until they end.
 
 ## Agent
 

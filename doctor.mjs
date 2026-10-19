@@ -9,9 +9,17 @@
  * with another architecture would not, and whether an agent serves the pool.
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { constants } from "node:fs";
+import { access, readFile, stat } from "node:fs/promises";
+import { delimiter, isAbsolute, join } from "node:path";
 
+import {
+  claudeCredentialDescribed,
+  claudeCredentialFile,
+  claudeCredentialRefusal,
+  claudeCredentialSetting,
+} from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   listArgv,
   networkInspectArgv,
@@ -33,6 +41,7 @@ import {
 import {
   launchAgentFileName,
   launchAgentLabel,
+  launchAgentPath,
   launchAgentPoolFile,
 } from "./launchAgent.mjs";
 import {
@@ -43,7 +52,8 @@ import {
   vmPlatform,
 } from "./runner.mjs";
 import {
-  claudeTokenFileRefusal,
+  claudeCredentialFileRefusal,
+  runnerClaudeCredential,
   runnerConfig,
   runnerConfigLimits,
 } from "./runnerConfig.mjs";
@@ -67,6 +77,8 @@ import {
  * @property {RunnerPaths} paths
  * @property {number} uid this process's
  * @property {string} home the home docker's VM shares
+ * @property {string | undefined} path this process's PATH
+ * @property {(file: string) => Promise<string | undefined>} claudeVersion what a `claude` says its version is
  * @property {DoctorParts} parts
  */
 
@@ -105,6 +117,133 @@ function hostJobsChecked(config) {
       `timeoutSecsMax is at most ${String(hostTimeoutSecsMax)} for a job on the Mac itself`,
     );
   return "a job that pins no image and names the Mac's platform runs on the Mac itself, unisolated";
+}
+
+/** The cap on asking a `claude` its version, which guards a hung one and not a slow one. */
+const claudeVersionTimeoutMs = 30_000;
+
+/**
+ * What a `claude` says its version is, the first line it prints, or nothing
+ * where it prints none. It is run with `execFile`, never a shell.
+ *
+ * @param {string} file
+ * @returns {Promise<string | undefined>}
+ */
+export function claudeVersionAsked(file) {
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      ["--version"],
+      { timeout: claudeVersionTimeoutMs, encoding: "utf8" },
+      (error, stdout) => {
+        const line = stdout.split("\n")[0].trim();
+        resolve(error === null && line !== "" ? line : undefined);
+      },
+    );
+  });
+}
+
+/**
+ * The PATH a job on the Mac itself is started with, and whose it is: the
+ * runner's file's, or the one the agent serving the pool file runs the runner
+ * with, or where none serves it this process's own, as a run from this shell
+ * would have.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @returns {Promise<[string, string]>}
+ */
+async function hostJobPath(input, config) {
+  if (config.environment.PATH !== undefined)
+    return [config.environment.PATH, "the PATH the runner's file sets"];
+  const agent = await agentPlist(input).catch(() => undefined);
+  const served =
+    agent?.text !== undefined &&
+    launchAgentPoolFile(agent.text) === input.poolFile
+      ? launchAgentPath(agent.text)
+      : undefined;
+  if (served !== undefined)
+    return [served, "the PATH the launchd agent runs the runner with"];
+  return [input.path ?? "", "doctor's own PATH"];
+}
+
+/**
+ * The `claude` a job on the Mac itself runs, as the PATH it is started with
+ * finds it, or why there is none: a warning, which passes, since a job that
+ * runs no Claude Code needs none.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @returns {Promise<{found: string} | {missing: string}>}
+ */
+async function hostClaudeFound(input, config) {
+  const [path, whose] = await hostJobPath(input, config);
+  for (const directory of path.split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    const file = join(directory, "claude");
+    try {
+      await access(file, constants.X_OK);
+      if (!(await stat(file)).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const version = await input.claudeVersion(file);
+    return {
+      found: `a job on the Mac itself runs ${file}, ${version ?? "which says no version"}, found on ${whose}`,
+    };
+  }
+  return {
+    missing: `no claude is on ${whose}, ${path === "" ? "which is empty" : path}, so a job on the Mac itself runs no Claude Code`,
+  };
+}
+
+/**
+ * The Claude credential the runner's file names, its file held to the rule a
+ * run holds it to and then read, as only doctor reads it, and held to what a
+ * file of its kind says. It names the kind and its settings and never what
+ * the file holds, and on a pool registered with `--host` the `claude` a job
+ * on the Mac itself runs.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @param {boolean} host whether a job may run on the Mac itself
+ * @returns {Promise<DoctorFinding>}
+ */
+async function claudeCredentialFinding(input, config, host) {
+  const check = "Claude credential";
+  const credential = runnerClaudeCredential(config);
+  const file = claudeCredentialFile(credential);
+  const setting = claudeCredentialSetting(credential);
+  const { label } = claudeCredentialDescribed(setting);
+  let refusal = await claudeCredentialFileRefusal(setting, file, {
+    uid: input.uid,
+    home: input.home,
+  });
+  if (refusal === undefined)
+    try {
+      const text = (await readFile(file, "utf8")).trim();
+      refusal = claudeCredentialRefusal(setting, text, file);
+    } catch {
+      refusal = `the ${label} ${file} cannot be read`;
+    }
+  if (refusal !== undefined) return { check, passed: false, detail: refusal };
+  const named = [
+    setting.kind,
+    ...Object.entries(setting).flatMap(([key, value]) =>
+      key === "kind" ? [] : [`${key} ${String(value)}`],
+    ),
+  ].join(", ");
+  const detail = `${named}, from the ${label} ${file}, this runner's own`;
+  if (!host) return { check, passed: true, detail };
+  const claude = await hostClaudeFound(input, config);
+  return "found" in claude
+    ? { check, passed: true, detail: `${detail}; ${claude.found}` }
+    : {
+        check,
+        passed: true,
+        warning: true,
+        detail: `${detail}; ${claude.missing}`,
+      };
 }
 
 /**
@@ -168,6 +307,21 @@ async function planeChecks(input, credentials, findings) {
 }
 
 /**
+ * Where the agent named for the pool file is, and its text where there is a
+ * file there, refused where the pool file's name makes no agent's.
+ *
+ * @param {DoctorInput} input
+ * @returns {Promise<{plist: string, text: string | undefined}>}
+ */
+async function agentPlist(input) {
+  const plist = join(
+    input.paths.agents,
+    launchAgentFileName(launchAgentLabel(input.poolFile)),
+  );
+  return { plist, text: await readFile(plist, "utf8").catch(() => undefined) };
+}
+
+/**
  * Whether an agent serves the pool file, which a pool run from a terminal
  * need not have, so its absence is a warning.
  *
@@ -177,11 +331,9 @@ async function planeChecks(input, credentials, findings) {
 async function agentFinding(input) {
   const check = "launchd agent";
   let plist;
+  let text;
   try {
-    plist = join(
-      input.paths.agents,
-      launchAgentFileName(launchAgentLabel(input.poolFile)),
-    );
+    ({ plist, text } = await agentPlist(input));
   } catch (failure) {
     return {
       check,
@@ -189,7 +341,6 @@ async function agentFinding(input) {
       detail: failure instanceof Error ? failure.message : String(failure),
     };
   }
-  const text = await readFile(plist, "utf8").catch(() => undefined);
   if (text !== undefined && launchAgentPoolFile(text) === input.poolFile)
     return { check, passed: true, detail: `${plist} serves this pool file` };
   return {
@@ -234,14 +385,9 @@ export async function doctorFindings(input) {
       poolSocket(poolRuntimeDirectory(input.paths, credentials)),
     ]);
   if (config !== undefined)
-    await checked(findings, "Claude token file", async () => {
-      const refusal = await claudeTokenFileRefusal(config.claudeTokenFile, {
-        uid: input.uid,
-        home: input.home,
-      });
-      if (refusal !== undefined) throw new Error(refusal);
-      return [true, `${config.claudeTokenFile}, this runner's own`];
-    });
+    findings.push(
+      await claudeCredentialFinding(input, config, credentials?.host === true),
+    );
   if (credentials?.host === true && config !== undefined)
     await checked(findings, "host jobs", async () => [
       true,

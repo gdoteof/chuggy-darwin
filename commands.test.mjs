@@ -793,6 +793,56 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);
 });
 
+test("doctor on a pool registered with --host names the claude a job there runs and the version it says, on the PATH its agent was given ahead of doctor's own", async (t) => {
+  const { home, poolFile } = await runnerFixture(t, {
+    pool: { ...fixturePool, host: true },
+  });
+  const agent = await binPath(t);
+  const shell = await binPath(t, []);
+  for (const [{ bin }, version] of [
+    [agent, "2.1.282 (Claude Code)"],
+    [shell, "1.0.0 (Claude Code)"],
+  ])
+    await writeFile(join(bin, "claude"), `#!/bin/sh\necho '${version}'\n`, {
+      mode: 0o700,
+    });
+  /** @param {string} PATH */
+  const said = async (PATH) => {
+    const { out, err } = await called(["doctor", "--pool", poolFile], {
+      home,
+      environment: { PATH },
+    });
+    return `${out}\n${err}`
+      .split("\n")
+      .find((line) => line.includes(" Claude credential: "));
+  };
+  const runs = (
+    /** @type {string} */ bin,
+    /** @type {string} */ version,
+    /** @type {string} */ whose,
+  ) =>
+    `; a job on the Mac itself runs ${join(bin, "claude")}, ${version} (Claude Code), found on ${whose}`;
+  const unserved = await said(shell.bin);
+  assert.ok(unserved?.startsWith("ok    "), unserved);
+  assert.ok(unserved?.endsWith(runs(shell.bin, "1.0.0", "doctor's own PATH")));
+  const installed = await called(["install-agent", "--pool", poolFile], {
+    home,
+    environment: { PATH: agent.PATH },
+  });
+  assert.equal(installed.status, 0, installed.err);
+  const served = await said(shell.bin);
+  assert.ok(
+    served?.endsWith(
+      runs(
+        agent.bin,
+        "2.1.282",
+        "the PATH the launchd agent runs the runner with",
+      ),
+    ),
+    served,
+  );
+});
+
 test("install-agent writes an absolute node and PATH for a PATH entry relative to where it ran, since launchd runs the agent from /", async (t) => {
   const { home, poolFile, paths } = await runnerFixture(t);
   const { bin } = await binPath(t);

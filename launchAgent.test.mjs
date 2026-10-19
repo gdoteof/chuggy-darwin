@@ -6,6 +6,7 @@ import { registerPoolFileName } from "@chuggy/worker-core/register.mjs";
 import {
   launchAgentBaseCharsMax,
   launchAgentLabel,
+  launchAgentPath,
   launchAgentPlist,
   launchAgentPoolFile,
   shellQuoted,
@@ -68,14 +69,15 @@ test("an agent is labelled for its pool file, and a name a label is not given he
   );
 });
 
-test("an agent restarts its runner after any exit but 0, and its pool file reads back through the escaping", () => {
+test("an agent restarts its runner after any exit but 0, and its pool file and PATH read back through the escaping", () => {
   const poolFile = "/Users/a&b/<pools>/p.json";
+  const path = "/usr/bin:/Users/a&b/<bin>:/opt/homebrew/bin";
   const plist = launchAgentPlist({
     label: "chuggy-darwin.p",
     node: "/opt/homebrew/bin/node",
     cli: "/opt/chuggy-darwin/cli.mjs",
     poolFile,
-    path: "/usr/bin:/opt/homebrew/bin",
+    path,
     log: "/Users/a/Library/Logs/chuggy-darwin/chuggy-darwin.p.log",
   });
   assert.match(
@@ -90,6 +92,8 @@ test("an agent restarts its runner after any exit but 0, and its pool file reads
   );
   assert.equal(launchAgentPoolFile(plist), poolFile);
   assert.equal(launchAgentPoolFile("<plist/>"), undefined);
+  assert.equal(launchAgentPath(plist), path);
+  assert.equal(launchAgentPath("<plist/>"), undefined);
 });
 
 test("an argument the operator is told is quoted for a shell only where it must be", () => {
