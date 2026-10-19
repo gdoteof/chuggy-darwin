@@ -214,9 +214,10 @@ export async function dockerMachine(engine) {
 }
 
 /**
- * The endpoint a pull is told, which a pull made under a configuration
- * directory of its own would otherwise lose. Only a unix socket is taken,
- * since a remote context's certificates would not reach the pull.
+ * The endpoint a pull of the pool's registry is told, which that pull, made
+ * under a configuration directory of its own, would otherwise lose. Only a
+ * unix socket is taken, since a remote context's certificates would not reach
+ * it.
  *
  * @param {Engine} engine
  * @returns {Promise<string>}

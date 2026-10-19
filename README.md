@@ -64,6 +64,8 @@ chuggy-darwin doctor --pool <file>  # everything a run needs, changing nothing
 
 `CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. `doctor` also fails where docker's VM no longer runs the platform the pool registered, as after `colima start --arch` with another architecture, and warns where no agent serves the pool. While the pool holds work, a run keeps the Mac from idle sleep with `caffeinate -i`, since a sleeping Mac pauses the VM and the work's leases lapse; a closed lid on battery still sleeps. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
 
+A private image is pulled with your own docker login for its registry: run `docker login ghcr.io` once on the Mac, as you. An agent runs with the PATH of the shell `install-agent` was run from and no other variable, so a `DOCKER_CONFIG` set only in a shell does not reach it, and a credential helper your docker configuration names, such as `osxkeychain`, must be on that PATH. The registry the pool was registered for is the exception: a pull from it presents the pool's own token.
+
 ## Work that pins no image
 
 A task that pins no image names capabilities instead, and this runner meets them with what you give it. A job naming the VM's platform runs in the first image `images` lists declaring every capability it names, its platform aside, and is otherwise refused:
