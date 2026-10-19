@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
+import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
+import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
+
 import { fakeEngine } from "./engine.fixture.mjs";
 import {
   dockerEndpoint,
@@ -299,4 +303,187 @@ setInterval(() => undefined, 1000);`,
   const [code, signal] = await once(child, "exit");
   assert.deepEqual([code, signal], [null, "SIGTERM"]);
   assert.deepEqual(await readdir(runtime), ["pull-1-another"]);
+});
+
+/**
+ * Each way a runner's file may name a Claude credential kept in `file`, and
+ * the setting a workload is told the kind by.
+ *
+ * @param {string} file
+ * @returns {Array<[Record<string, unknown>, Record<string, string>]>}
+ */
+function claudeNamings(file) {
+  return [
+    [{ claudeTokenFile: file }, { kind: "Subscription" }],
+    [
+      { claudeCredential: { kind: "Subscription", tokenFile: file } },
+      { kind: "Subscription" },
+    ],
+    [
+      { claudeCredential: { kind: "ApiKey", apiKeyFile: file } },
+      { kind: "ApiKey" },
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Bedrock",
+          region: "us-west-2",
+          apiKeyFile: file,
+        },
+      },
+      { kind: "Bedrock", region: "us-west-2" },
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Bedrock",
+          region: "us-west-2",
+          credentialsFile: file,
+        },
+      },
+      { kind: "Bedrock", region: "us-west-2", profile: "default" },
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Vertex",
+          region: "us-east5",
+          project: "chuggy-jobs",
+          credentialsFile: file,
+        },
+      },
+      { kind: "Vertex", region: "us-east5", project: "chuggy-jobs" },
+    ],
+    [
+      {
+        claudeCredential: {
+          kind: "Foundry",
+          resource: "chuggy-jobs",
+          apiKeyFile: file,
+        },
+      },
+      { kind: "Foundry", resource: "chuggy-jobs" },
+    ],
+  ];
+}
+
+/**
+ * Rewrites the runner's file to name the Claude credential `named` names.
+ *
+ * @param {{config: string}} paths
+ * @param {Record<string, unknown>} named
+ */
+function claudeNamed(paths, named) {
+  return ownerOnly(
+    paths.config,
+    JSON.stringify({ timeoutSecsMax: 3600, outputBytesMax: 65536, ...named }),
+  );
+}
+
+/**
+ * The setting a workload's variables tell it the Claude credential's kind by.
+ *
+ * @param {readonly string[]} variables each `NAME=value`
+ */
+function claudeToldOf(variables) {
+  const told = variables.filter((line) =>
+    line.startsWith(`${claudeCredentialVariable}=`),
+  );
+  assert.equal(told.length, 1, variables.join("\n"));
+  return JSON.parse(told[0].slice(claudeCredentialVariable.length + 1));
+}
+
+test("a job and a session in a container are each told the kind of Claude credential the runner's file names, a subscription's where it names claudeTokenFile, and mount its file", async (t) => {
+  for (const index of claudeNamings("").keys()) {
+    const { home, poolFile, paths, tokenFile } = await runnerFixture(t);
+    const [named, setting] = claudeNamings(tokenFile)[index];
+    await claudeNamed(paths, named);
+    const { engine, state } = fakeEngine();
+    const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine,
+    });
+    const job = await runner.backend.place(assignment(), "Job");
+    const session = await runner.backend.place(
+      { ...assignment(), assignment: "ses-1" },
+      "Session",
+    );
+    assert.deepEqual([job.placed, session.placed], ["Placed", "Placed"]);
+    await runner.backend.settled();
+    const runs = state.calls.filter(({ argv }) => argv[0] === "run");
+    assert.equal(runs.length, 2);
+    for (const run of runs) {
+      const variables = (run.envFile ?? "")
+        .split("\n")
+        .filter((line) => line !== "");
+      assert.deepEqual(claudeToldOf(variables), setting);
+      const mount = `type=bind,source=${tokenFile},target=${jobProviderCredentialFile},readonly`;
+      assert.equal(
+        run.argv[run.argv.indexOf(mount) - 1],
+        "--mount",
+        JSON.stringify(named),
+      );
+    }
+  }
+});
+
+test("a job on the Mac itself is told the kind of Claude credential the runner's file names, a subscription's where it names claudeTokenFile, and reads its file where it is", async (t) => {
+  for (const index of claudeNamings("").keys()) {
+    const { home, poolFile, paths, tokenFile } = await runnerFixture(t, {
+      pool: {
+        ...fixturePool,
+        capabilities: ["Platform:Linux:Arm64", "Platform:MacOS:Arm64"],
+        host: true,
+      },
+    });
+    const [named, setting] = claudeNamings(tokenFile)[index];
+    await claudeNamed(paths, named);
+    /** @type {Array<Record<string, string>>} */
+    const started = [];
+    /** @type {Promise<unknown>[]} */
+    const closed = [];
+    const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: fakeEngine().engine,
+      spawn: /** @type {any} */ (
+        (
+          /** @type {string} */ _command,
+          /** @type {string[]} */ _argv,
+          /** @type {{env: Record<string, string>}} */ options,
+        ) => {
+          started.push(options.env);
+          const child = spawn(process.execPath, ["-e", ""], {
+            detached: true,
+            stdio: "ignore",
+          });
+          closed.push(once(child, "close"));
+          return child;
+        }
+      ),
+    });
+    const placed = await runner.backend.place(
+      {
+        ...assignment(),
+        image: undefined,
+        capabilities: ["Platform:MacOS:Arm64", "Agent:Claude"],
+      },
+      "Job",
+    );
+    assert.equal(placed.placed, "Placed", placed.evidence);
+    await Promise.all(closed);
+    await runner.backend.settled();
+    assert.equal(started.length, 1);
+    const variables = Object.entries(started[0]).map(
+      ([name, value]) => `${name}=${value}`,
+    );
+    assert.deepEqual(claudeToldOf(variables), setting);
+    assert.equal(
+      JSON.parse(started[0][workerTaskVariable]).providerCredentialFile,
+      tokenFile,
+    );
+  }
 });
