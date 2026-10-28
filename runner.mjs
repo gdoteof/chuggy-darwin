@@ -283,6 +283,8 @@ export async function runnerParts(setup, host) {
       machine: size,
       pullRetryMs,
       images: config.images,
+      imageRecord: join(paths.images, "docker.json"),
+      imageUnusedSecsMax: config.imageUnusedSecsMax,
     },
     {
       engine,

@@ -28,6 +28,7 @@ import {
   claudeCredentialSetting,
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
+import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 
 /**
@@ -131,6 +132,11 @@ export const runnerConfigSchema = z
      * `runnerPoolName` names it.
      */
     pools: z.record(z.string(), poolLimitsSchema).default({}),
+    /**
+     * How long a job's image this runner pulled may go unused before it is
+     * removed, 0 keeping them.
+     */
+    imageUnusedSecsMax: nonnegativeSchema.default(imageUnusedSecsMaxDefault),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

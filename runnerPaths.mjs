@@ -13,6 +13,7 @@ import { join } from "node:path";
  * @property {string} signIns where `mcp` keeps each site's sign-in
  * @property {string} logs where an ended job's logs are saved
  * @property {string} jobs where a job run on the Mac itself has its directory
+ * @property {string} images where the record of docker's images is kept
  * @property {string} runtime where each pool's pull credentials, env files and control socket live
  */
 
@@ -34,6 +35,7 @@ export function runnerPaths(home) {
     signIns: join(home, ".config", "chuggy", "sign-ins"),
     logs: join(library, "Logs", "chuggy-darwin"),
     jobs: join(library, "Application Support", "chuggy-darwin", "jobs"),
+    images: join(library, "Application Support", "chuggy-darwin", "images"),
     runtime: join(library, "Caches", "chuggy-darwin"),
   };
 }

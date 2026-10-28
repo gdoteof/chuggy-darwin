@@ -64,7 +64,7 @@ const credentials = [
   },
 ];
 
-test("the runner keeps its file, agents, logs, host jobs and runtime where a Mac keeps each, and pool files and sign-ins where chuggy-linux does", () => {
+test("the runner keeps its file, agents, logs, host jobs, image record and runtime where a Mac keeps each, and pool files and sign-ins where chuggy-linux does", () => {
   assert.deepEqual(runnerPaths("/Users/shame"), {
     config:
       "/Users/shame/Library/Application Support/chuggy-darwin/runner.json",
@@ -73,6 +73,7 @@ test("the runner keeps its file, agents, logs, host jobs and runtime where a Mac
     signIns: "/Users/shame/.config/chuggy/sign-ins",
     logs: "/Users/shame/Library/Logs/chuggy-darwin",
     jobs: "/Users/shame/Library/Application Support/chuggy-darwin/jobs",
+    images: "/Users/shame/Library/Application Support/chuggy-darwin/images",
     runtime: "/Users/shame/Library/Caches/chuggy-darwin",
   });
 });
@@ -85,6 +86,7 @@ test("the runner's file takes the limits' defaults, and refuses an engine, since
   assert.equal(config.network, "chuggy-jobs");
   assert.deepEqual(config.images, []);
   assert.deepEqual(config.pools, {});
+  assert.equal(config.imageUnusedSecsMax, 604_800);
   const engined = await runnerFixture(t, { runner: { engine: "docker" } });
   await assert.rejects(runnerConfig(engined.paths.config), /engine/u);
 });
@@ -458,6 +460,24 @@ test("a pool's entry is refused where it leaves that pool's service no work, whi
   assert.deepEqual((await runnerConfig(paths.config)).pools, {
     "vteng.chuggy.builds": { concurrencyMax: 2, sessionsMax: 0 },
   });
+});
+
+test("a job's image this runner pulled is kept a week unused unless the file says otherwise, and 0 keeps it", async (t) => {
+  for (const imageUnusedSecsMax of [0, 86_400]) {
+    const { paths } = await runnerFixture(t, {
+      runner: { imageUnusedSecsMax },
+    });
+    assert.equal(
+      (await runnerConfig(paths.config)).imageUnusedSecsMax,
+      imageUnusedSecsMax,
+    );
+  }
+  for (const imageUnusedSecsMax of [-1, 1.5, "604800"]) {
+    const { paths } = await runnerFixture(t, {
+      runner: { imageUnusedSecsMax },
+    });
+    await assert.rejects(runnerConfig(paths.config), /imageUnusedSecsMax/u);
+  }
 });
 
 test("a directory is not a runner configuration", async (t) => {

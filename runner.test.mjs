@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
@@ -25,6 +25,7 @@ import {
   socketPathBytesMax,
 } from "./runner.mjs";
 import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
+import { runnerPaths } from "./runnerPaths.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
@@ -170,6 +171,66 @@ test("a runner's client is given its own pool's limits from pools, and the file'
       limits,
       JSON.stringify(runner),
     );
+  }
+});
+
+test("a run removes a job's image it pulled once unused for as long as its file says, by the record every runner on this Mac keeps", async (t) => {
+  const image = `ghcr.io/someone/tool@sha256:${"b".repeat(64)}`;
+  for (const [imageUnusedSecsMax, kept] of [
+    [undefined, true],
+    [86_399, false],
+  ]) {
+    const { home, poolFile } = await runnerFixture(t, {
+      runner: imageUnusedSecsMax === undefined ? {} : { imageUnusedSecsMax },
+    });
+    const file = join(runnerPaths(home).images, "docker.json");
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        createdMs: 0,
+        repositories: {},
+        images: {
+          [image]: {
+            kinds: ["Job"],
+            usedMs: Date.now() - 86_400_000,
+            pulledId: "sha256:1",
+          },
+        },
+        holds: {},
+      }),
+    );
+    const { engine } = fakeEngine();
+    /** @type {string[]} */
+    const removed = [];
+    const answered = (stdout = "") => ({ code: 0, stdout, stderr: "" });
+    const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: {
+        ...engine,
+        exec: async (argv, call) => {
+          const [verb, sub, ...rest] = argv;
+          if (verb !== "image" || (sub === "inspect" && rest[0] === "--format"))
+            return engine.exec(argv, call);
+          if (sub === "ls") return answered("sha256:1\n");
+          if (sub === "rm") {
+            removed.push(rest[0]);
+            return answered(`Untagged: ${rest[0]}\nDeleted: sha256:1\n`);
+          }
+          return answered(
+            JSON.stringify([
+              { Id: "sha256:1", RepoTags: [], RepoDigests: [image] },
+            ]),
+          );
+        },
+      },
+    });
+    await runner.backend.held();
+    await runner.backend.settled();
+    assert.deepEqual(removed, kept ? [] : [image], String(imageUnusedSecsMax));
   }
 });
 

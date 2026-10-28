@@ -52,7 +52,7 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 }
 ```
 
-`claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`), `images` (none) and `pools` (none) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
+`claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`), `images` (none), `pools` (none) and `imageUnusedSecsMax` (a week, 604800) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
 
 Each pool's agent runs `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has. `pools` sets one pool's agent apart from the rest, keyed by its pool file's name without `.json`; each limit it names replaces the file's for that agent alone. A personal runner that takes jobs beside a project's pool kept for its lead:
 
@@ -89,6 +89,8 @@ chuggy-darwin doctor --pool <file>  # everything a run needs, changing nothing
 ```
 
 `CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. `doctor` also fails where docker's VM no longer runs the platform the pool registered, as after `colima start --arch` with another architecture, and warns where no agent serves the pool. While the pool holds work, a run keeps the Mac from idle sleep with `caffeinate -i`, since a sleeping Mac pauses the VM and the work's leases lapse; a closed lid on battery still sleeps. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
+
+Hourly, a run removes images in Colima's VM that no runner here needs: of each repository chuggy's runtime or sessions came from, every untagged image but the two most recently used, and a job's image this runner pulled once it has gone unused for `imageUnusedSecsMax`, which 0 turns off. No removal is forced, so an image a container uses stays, and neither is one with a tag but the one a job pulled it by; to keep an image, tag it. Every runner on this Mac keeps one record of what it used, in `~/Library/Application Support/chuggy-darwin/images/docker.json`.
 
 A private image is pulled with your own docker login for its registry: run `docker login ghcr.io` once on the Mac, as you. An agent runs with the PATH of the shell `install-agent` was run from and no other variable, so a `DOCKER_CONFIG` set only in a shell does not reach it, and a credential helper your docker configuration names, such as `osxkeychain`, must be on that PATH. The registry the pool was registered for is the exception: a pull from it presents the pool's own token.
 
