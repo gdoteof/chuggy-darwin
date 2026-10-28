@@ -33,7 +33,11 @@ export function colimaProfile(machine) {
 }
 
 /**
- * A command run in the profile's VM, never through a shell there.
+ * A command run in the profile's VM. Lima runs it through the login shell
+ * there, each argument quoted for that shell, so none is read as shell
+ * syntax. What that shell's profile prints to stdout comes before the
+ * command's own output, and a read here then reads the disk as unknown and
+ * Rosetta as absent, each of which doctor warns of.
  *
  * @param {string} profile
  * @param {readonly string[]} argv

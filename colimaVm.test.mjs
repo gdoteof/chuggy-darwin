@@ -21,7 +21,7 @@ test("docker's VM is Colima's default profile's by the name colima, another prof
     assert.equal(colimaProfile(machine), profile, machine);
 });
 
-test("a command reaches the profile's VM through colima ssh, the colima on PATH, with no shell between", async (t) => {
+test("a command reaches the profile's VM through colima ssh, the colima on PATH, with no shell on the Mac between", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "chuggy-darwin-colima-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const colima = join(directory, "colima");
