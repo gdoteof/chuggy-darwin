@@ -1,8 +1,10 @@
 /**
  * The runner's own file, and whether it can hand a job its Claude credential's
  * file. The file is refused unless only its owner can read or write it, and is
- * read strictly, so a misspelt key is an error rather than a default. The
- * pool's credentials are the worker core's to read.
+ * read strictly, so a misspelt key is an error rather than a default; a pool's
+ * name in `pools` is not a key of the file's own, and `doctor` checks it
+ * against the pool files instead. The pool's credentials are the worker core's
+ * to read.
  *
  * THE FILE NAMES ONE CLAUDE CREDENTIAL, by `claudeCredential` of any kind the
  * core takes or by `claudeTokenFile`, a subscription's.
@@ -15,7 +17,7 @@
  */
 
 import { open, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative } from "node:path";
+import { basename, isAbsolute, relative } from "node:path";
 
 import { z } from "zod";
 
@@ -41,6 +43,14 @@ const sharedModeBits = 0o077;
 const runnerConfigBytesMax = 64 * 1024;
 
 const positiveSchema = z.number().int().positive().safe();
+
+const nonnegativeSchema = z.number().int().nonnegative().safe();
+
+/** A pool's service's own limits, each in place of the file's for that service alone. */
+const poolLimitsSchema = z.strictObject({
+  concurrencyMax: nonnegativeSchema.optional(),
+  sessionsMax: nonnegativeSchema.optional(),
+});
 
 /** A name docker gives a network, less the host's own. */
 const networkSchema = z
@@ -99,9 +109,10 @@ const credentialSchema = claudeCredentialSchema.superRefine(
 
 export const runnerConfigSchema = z
   .strictObject({
-    concurrencyMax: positiveSchema.default(1),
+    /** The jobs held at once, none where it is 0, as on a runner kept for sessions. */
+    concurrencyMax: nonnegativeSchema.default(1),
     /** The sessions held beside the jobs, none where it is 0. */
-    sessionsMax: z.number().int().nonnegative().safe().default(2),
+    sessionsMax: nonnegativeSchema.default(2),
     /** Where `claude setup-token`'s output was saved, a subscription's credential. */
     claudeTokenFile: credentialFileSchema.optional(),
     /** The credential Claude Code runs on, of any kind, in place of `claudeTokenFile`. */
@@ -115,12 +126,18 @@ export const runnerConfigSchema = z
      * owner declares it meets: the first meeting every one the job names.
      */
     images: ownerImagesSchema.default([]),
+    /**
+     * Limits of a pool's own, by its pool file's name without `.json`, as
+     * `runnerPoolName` names it.
+     */
+    pools: z.record(z.string(), poolLimitsSchema).default({}),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {
     when: ({ value }) => typeof value === "object" && value !== null,
   })
-  .superRefine(configCredentialChecked);
+  .superRefine(configCredentialChecked)
+  .superRefine(configLimitsChecked);
 
 /**
  * Holds the file to naming a Claude credential, telling one that names
@@ -162,6 +179,32 @@ function configCredentialChecked(config, context) {
 }
 
 /**
+ * Holds the file to a runner that takes some work, and each pool's service
+ * its `pools` entry limits to one that takes some.
+ *
+ * @param {RunnerConfig} config
+ * @param {z.core.$RefinementCtx} context
+ */
+function configLimitsChecked(config, context) {
+  if (config.concurrencyMax === 0 && config.sessionsMax === 0)
+    context.addIssue({
+      code: "custom",
+      path: ["concurrencyMax"],
+      message: "is 0 and so is sessionsMax, so this runner would take no work",
+    });
+  for (const [name, own] of Object.entries(config.pools)) {
+    const limits = runnerPoolLimitsOver(config, own);
+    if (limits.concurrencyMax === 0 && limits.sessionsMax === 0)
+      context.addIssue({
+        code: "custom",
+        path: ["pools", name],
+        message:
+          "leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work",
+      });
+  }
+}
+
+/**
  * The Claude credential a checked file names: its `claudeCredential`, or a
  * subscription's token where it names `claudeTokenFile`.
  *
@@ -192,13 +235,62 @@ export function runnerClaudeHanded(config) {
 }
 
 /**
- * How many jobs and sessions each pool's service holds at once, in the file's
- * own terms.
+ * The name a pool's own limits are found by in `pools`: its file's, without
+ * `.json`, as `register` writes it and its agent is labelled for it.
+ *
+ * @param {string} poolFile
+ */
+export function runnerPoolName(poolFile) {
+  return basename(poolFile, ".json");
+}
+
+/**
+ * The limits a pool's service holds: those its entry in `pools` names, and
+ * the file's for the rest.
  *
  * @param {RunnerConfig} config
+ * @param {string} poolFile
  */
-export function runnerConfigLimits(config) {
-  return `concurrencyMax ${String(config.concurrencyMax)}, sessionsMax ${String(config.sessionsMax)}`;
+export function runnerPoolLimits(config, poolFile) {
+  return runnerPoolLimitsOver(config, runnerPoolOwn(config, poolFile));
+}
+
+/**
+ * @param {RunnerConfig} config
+ * @param {RunnerConfig["pools"][string] | undefined} own
+ */
+function runnerPoolLimitsOver(config, own) {
+  return {
+    concurrencyMax: own?.concurrencyMax ?? config.concurrencyMax,
+    sessionsMax: own?.sessionsMax ?? config.sessionsMax,
+  };
+}
+
+/**
+ * A pool's entry in `pools`, or nothing.
+ *
+ * @param {RunnerConfig} config
+ * @param {string} poolFile
+ */
+function runnerPoolOwn(config, poolFile) {
+  const name = runnerPoolName(poolFile);
+  return Object.hasOwn(config.pools, name) ? config.pools[name] : undefined;
+}
+
+/**
+ * How many jobs and sessions a pool's service holds at once, in the file's
+ * own terms, and whether its entry in `pools` sets them.
+ *
+ * @param {RunnerConfig} config
+ * @param {string} poolFile
+ */
+export function runnerConfigLimits(config, poolFile) {
+  const { concurrencyMax, sessionsMax } = runnerPoolLimits(config, poolFile);
+  const own =
+    runnerPoolOwn(config, poolFile) === undefined
+      ? ""
+      : `, as pools.${runnerPoolName(poolFile)} sets them`;
+  return `concurrencyMax ${String(concurrencyMax)}, sessionsMax ${String(sessionsMax)}${own}`;
 }
 
 /**

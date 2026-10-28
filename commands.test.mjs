@@ -582,6 +582,23 @@ test("status and stop reach this pool's service, and status names each workload'
   assert.deepEqual(stopped, ["asg-1"]);
 });
 
+test("status names the limits this pool's entry in pools sets its service", async (t) => {
+  const { home, poolFile } = await runnerFixture(t, {
+    runner: {
+      concurrencyMax: 2,
+      pools: {
+        "vteng.chuggy.shame": { concurrencyMax: 0, sessionsMax: 1 },
+        other: { concurrencyMax: 5 },
+      },
+    },
+  });
+  const status = await called(["status", "--pool", poolFile], { home });
+  assert.deepEqual(status.out.split("\n").slice(0, 2), [
+    "service: not running",
+    "limits: concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.shame sets them",
+  ]);
+});
+
 test("a second run of a pool is refused before it removes anything of the first's", async (t) => {
   const { home, poolFile, paths } = await runnerFixture(t);
   const runtime = poolRuntimeDirectory(paths, fixturePool);

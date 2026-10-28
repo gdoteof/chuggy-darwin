@@ -22,6 +22,8 @@ import {
   claudeCredentialFileRefusal,
   runnerClaudeHanded,
   runnerConfig,
+  runnerConfigLimits,
+  runnerPoolLimits,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -82,6 +84,7 @@ test("the runner's file takes the limits' defaults, and refuses an engine, since
   assert.equal(config.sessionsMax, 2);
   assert.equal(config.network, "chuggy-jobs");
   assert.deepEqual(config.images, []);
+  assert.deepEqual(config.pools, {});
   const engined = await runnerFixture(t, { runner: { engine: "docker" } });
   await assert.rejects(runnerConfig(engined.paths.config), /engine/u);
 });
@@ -345,6 +348,116 @@ test("what the file may not say is refused, naming where", async (t) => {
 test("sessionsMax may be 0, holding no sessions", async (t) => {
   const { paths } = await runnerFixture(t, { runner: { sessionsMax: 0 } });
   assert.equal((await runnerConfig(paths.config)).sessionsMax, 0);
+});
+
+test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+  for (const sessions of [{}, { sessionsMax: 1 }]) {
+    const { paths } = await runnerFixture(t, {
+      runner: { concurrencyMax: 0, ...sessions },
+    });
+    const config = await runnerConfig(paths.config);
+    assert.equal(config.concurrencyMax, 0);
+    assert.equal(config.sessionsMax, sessions.sessionsMax ?? 2);
+  }
+  const { paths } = await runnerFixture(t, {
+    runner: { concurrencyMax: 0, sessionsMax: 0 },
+  });
+  await assert.rejects(runnerConfig(paths.config), {
+    message: `runner configuration ${paths.config}: concurrencyMax is 0 and so is sessionsMax, so this runner would take no work`,
+  });
+});
+
+test("a pool's entry in pools sets its own service's limits in place of the file's, each it names, and no other pool's", async (t) => {
+  const pools = {
+    "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+    "vteng.chuggy.builds": { sessionsMax: 0 },
+  };
+  const { paths } = await runnerFixture(t, {
+    runner: { concurrencyMax: 2, pools },
+  });
+  const config = await runnerConfig(paths.config);
+  assert.deepEqual(config.pools, pools);
+  /** @type {[string, {concurrencyMax: number, sessionsMax: number}, string][]} */
+  const cases = [
+    [
+      "vteng.chuggy.lead",
+      { concurrencyMax: 0, sessionsMax: 1 },
+      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.lead sets them",
+    ],
+    [
+      "vteng.chuggy.builds",
+      { concurrencyMax: 2, sessionsMax: 0 },
+      "concurrencyMax 2, sessionsMax 0, as pools.vteng.chuggy.builds sets them",
+    ],
+    [
+      "vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2fmember",
+      { concurrencyMax: 2, sessionsMax: 2 },
+      "concurrencyMax 2, sessionsMax 2",
+    ],
+    [
+      "vteng.chuggy",
+      { concurrencyMax: 2, sessionsMax: 2 },
+      "concurrencyMax 2, sessionsMax 2",
+    ],
+    [
+      "constructor",
+      { concurrencyMax: 2, sessionsMax: 2 },
+      "concurrencyMax 2, sessionsMax 2",
+    ],
+  ];
+  for (const [name, limits, line] of cases) {
+    const poolFile = `${paths.pools}/${name}.json`;
+    assert.deepEqual(runnerPoolLimits(config, poolFile), limits, name);
+    assert.equal(runnerConfigLimits(config, poolFile), line, name);
+  }
+});
+
+test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
+  const refusal =
+    "pools.vteng.chuggy.lead leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
+  /** @type {[Record<string, unknown>, string][]} */
+  const refused = [
+    [
+      { pools: { "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 0 } } },
+      refusal,
+    ],
+    [
+      { sessionsMax: 0, pools: { "vteng.chuggy.lead": { concurrencyMax: 0 } } },
+      refusal,
+    ],
+    [
+      {
+        concurrencyMax: 0,
+        sessionsMax: 1,
+        pools: { "vteng.chuggy.lead": { sessionsMax: 0 } },
+      },
+      refusal,
+    ],
+    [
+      { pools: { "vteng.chuggy.lead": { timeoutSecsMax: 60 } } },
+      'pools.vteng.chuggy.lead Unrecognized key: "timeoutSecsMax"',
+    ],
+    [
+      { pools: { "vteng.chuggy.lead": { concurrencyMax: -1 } } },
+      "pools.vteng.chuggy.lead.concurrencyMax Too small: expected number to be >=0",
+    ],
+  ];
+  for (const [runner, why] of refused) {
+    const { paths } = await runnerFixture(t, { runner });
+    await assert.rejects(runnerConfig(paths.config), {
+      message: `runner configuration ${paths.config}: ${why}`,
+    });
+  }
+  const { paths } = await runnerFixture(t, {
+    runner: {
+      concurrencyMax: 0,
+      sessionsMax: 1,
+      pools: { "vteng.chuggy.builds": { concurrencyMax: 2, sessionsMax: 0 } },
+    },
+  });
+  assert.deepEqual((await runnerConfig(paths.config)).pools, {
+    "vteng.chuggy.builds": { concurrencyMax: 2, sessionsMax: 0 },
+  });
 });
 
 test("a directory is not a runner configuration", async (t) => {

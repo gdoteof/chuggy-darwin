@@ -92,6 +92,55 @@ test("a Mac with everything a run needs passes every check, warning only that no
   );
 });
 
+test("doctor names the limits a pool's entry in pools sets its service, and warns of each entry naming no pool file in the pools directory", async (t) => {
+  const own = await doctored(
+    t,
+    {},
+    {
+      runner: {
+        pools: { "vteng.chuggy.shame": { concurrencyMax: 0, sessionsMax: 1 } },
+      },
+    },
+  );
+  assert.match(
+    own.find((line) => line.includes("runner configuration")) ?? "",
+    /^ok {4}runner configuration: .+\/runner\.json: concurrencyMax 0, sessionsMax 1, as pools\.vteng\.chuggy\.shame sets them$/u,
+  );
+
+  const lines = await doctored(
+    t,
+    {},
+    {
+      runner: {
+        pools: {
+          "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+          "vteng.chuggy.leed": { concurrencyMax: 0, sessionsMax: 1 },
+          "vteng.chuggy.lead.json": { concurrencyMax: 0, sessionsMax: 1 },
+        },
+      },
+    },
+    async ({ paths }) => {
+      await ownerOnly(join(paths.pools, "vteng.chuggy.lead.json"), "{}");
+      return {};
+    },
+  );
+  const line = lines.find((found) => found.includes("runner configuration"));
+  const [limits, ...warned] = (line ?? "").split("; ");
+  assert.match(
+    limits,
+    /^warn {2}runner configuration: .+\/runner\.json: concurrencyMax 1, sessionsMax 2$/u,
+  );
+  assert.deepEqual(
+    warned.map((said) =>
+      said.replace(/ in \S+\/chuggy\/pools,/u, " in pools,"),
+    ),
+    [
+      "pools.vteng.chuggy.leed names no pool file in pools, so it limits no service",
+      "pools.vteng.chuggy.lead.json names no pool file in pools, so it limits no service",
+    ],
+  );
+});
+
 test("a pool registered with --host fails doctor where the runner's file names what a host job's places set", async (t) => {
   const pool = {
     ...fixturePool,

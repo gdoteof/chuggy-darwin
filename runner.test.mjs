@@ -143,6 +143,36 @@ test("a pool registered with --host takes a job that pins no image and names the
   assert.ok(paths.jobs.startsWith(home));
 });
 
+test("a runner's client is given its own pool's limits from pools, and the file's where pools names another, a concurrencyMax of 0 among them", async (t) => {
+  for (const [runner, limits] of [
+    [{ concurrencyMax: 0 }, [0, 2]],
+    [
+      {
+        pools: { "vteng.chuggy.shame": { concurrencyMax: 0, sessionsMax: 1 } },
+      },
+      [0, 1],
+    ],
+    [{ pools: { "vteng.chuggy.shame": { sessionsMax: 0 } } }, [3, 0]],
+    [{ pools: { other: { concurrencyMax: 0, sessionsMax: 1 } } }, [3, 2]],
+  ]) {
+    const { home, poolFile } = await runnerFixture(t, {
+      runner: { concurrencyMax: 3, ...runner },
+    });
+    const { engine } = fakeEngine();
+    const { client } = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine,
+    });
+    assert.deepEqual(
+      [client.settings.concurrencyMax, client.settings.sessionsMax],
+      limits,
+      JSON.stringify(runner),
+    );
+  }
+});
+
 test("docker's machine is its VM's size and architecture, named as Node names one, and refused when docker cannot be asked or answers something else", async () => {
   const { engine, state } = fakeEngine();
   assert.deepEqual(await dockerMachine(engine), {

@@ -56,6 +56,7 @@ import {
   claudeCredentialFileRefusal,
   runnerClaudeHanded,
   runnerConfig,
+  runnerPoolLimits,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -69,6 +70,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @typedef {import("./runnerPaths.mjs").RunnerPaths} RunnerPaths
  *
  * @typedef {object} RunnerSetup
+ * @property {string} poolFile
  * @property {PoolCredentials} credentials
  * @property {RunnerConfig} config
  * @property {RunnerPaths} paths
@@ -98,6 +100,7 @@ export const socketPathBytesMax = 103;
 export async function runnerSetup(poolFile, home) {
   const paths = runnerPaths(home);
   return {
+    poolFile,
     credentials: await poolCredentials(poolFile),
     config: await runnerConfig(paths.config),
     paths,
@@ -299,7 +302,7 @@ export async function runnerParts(setup, host) {
   const client = poolRunnerClient(
     credentials,
     poweredBackend(backend, power),
-    { concurrencyMax: config.concurrencyMax, sessionsMax: config.sessionsMax },
+    runnerPoolLimits(config, setup.poolFile),
     { tokens, fetch: host.fetch },
   );
   return { runtime, socket, engine, backend, client };

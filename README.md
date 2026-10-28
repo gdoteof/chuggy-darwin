@@ -52,7 +52,16 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 }
 ```
 
-`claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`) and `images` (none) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
+`claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`), `images` (none) and `pools` (none) are optional. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
+
+Each pool's agent runs `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has. `pools` sets one pool's agent apart from the rest, keyed by its pool file's name without `.json`; each limit it names replaces the file's for that agent alone. A personal runner that takes jobs beside a project's pool kept for its lead:
+
+```json
+"concurrencyMax": 2,
+"pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
+```
+
+An agent reads this file when it starts, so restart it after an edit; `status` and `doctor` print the limits the file now gives the pool they are given, and `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`.
 
 ```json
 "claudeCredential": { "kind": "Subscription", "tokenFile": "/Users/you/.config/chuggy/claude-token" }
