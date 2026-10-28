@@ -14,6 +14,7 @@ import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
+import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
 
 import { cliMain } from "./commands.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
@@ -572,6 +573,7 @@ test("status and stop reach this pool's service, and status names each workload'
     [
       "service: running",
       "limits: concurrencyMax 3, sessionsMax 4",
+      "memory: 2 GiB room · 2 GiB budget · 2 GiB ceiling · 0 GiB sessions · Taking",
       `${inFlightFixture.name}  session  pulling  i  asg-1`,
       "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
     ].join("\n"),
@@ -580,6 +582,53 @@ test("status and stop reach this pool's service, and status names each workload'
   assert.equal(stop.status, 0);
   assert.equal(stop.out, "stopped asg-1");
   assert.deepEqual(stopped, ["asg-1"]);
+});
+
+test("status names a job held for room and what it waits for, and the memory of Colima's VM it waits on", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+    [
+      {
+        ...inFlightFixture,
+        kind: "Job",
+        phase: "Held",
+        memoryMib: 4096,
+        waiting: "needs 4 GiB, room 2 GiB",
+      },
+    ],
+  );
+  const { engine, state } = fakeEngine();
+  state.machine = { ...state.machine, memoryBytes: 8 * 2 ** 30 };
+  state.containers.set("chuggy-jobs-postgres", {
+    id: "id-postgres",
+    name: "chuggy-jobs-postgres",
+    labels: {},
+    status: "running",
+    image: "postgres",
+    usedBytes: 2 * 2 ** 30,
+  });
+  await engine.exec(
+    heldCreateArgv({
+      name: `${inFlightFixture.name}-held`,
+      pool: "vteng/chuggy/shame",
+      assignment: inFlightFixture.assignment,
+      memoryMib: 4096,
+      heldMs: 1,
+      pid: process.pid,
+      untilMs: Date.now() + 3_600_000,
+      starting: false,
+    }),
+  );
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.deepEqual(status.out.split("\n").slice(2), [
+    "memory: 2 GiB room · 8 GiB budget · 8 GiB ceiling · 0 GiB sessions · Held",
+    `${inFlightFixture.name}  job  held  i  asg-1  waiting: needs 4 GiB, room 2 GiB`,
+  ]);
 });
 
 test("status names the limits this pool's entry in pools sets its service", async (t) => {

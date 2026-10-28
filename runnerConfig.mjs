@@ -47,6 +47,9 @@ const positiveSchema = z.number().int().positive().safe();
 
 const nonnegativeSchema = z.number().int().nonnegative().safe();
 
+/** The most GiB a key may keep free, so its bytes are still a safe integer. */
+const freeGibMax = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
+
 /** A pool's service's own limits, each in place of the file's for that service alone. */
 const poolLimitsSchema = z.strictObject({
   concurrencyMax: nonnegativeSchema.optional(),
@@ -137,6 +140,22 @@ export const runnerConfigSchema = z
      * removed, 0 keeping them.
      */
     imageUnusedSecsMax: nonnegativeSchema.default(imageUnusedSecsMaxDefault),
+    /**
+     * The GiB of the VM's memory its containers leave free, a reserve for
+     * what the VM and docker use outside every container. The rest is the
+     * budget every running container and every held job is counted against:
+     * a job is held from its claim until it has room, and is taken only where
+     * it fits. None is kept unless the file sets it, so the whole of the VM's
+     * memory is the budget.
+     */
+    memoryFreeGibMin: nonnegativeSchema.max(freeGibMax).default(0),
+    /**
+     * The GiB of the budget no job may ask for, kept for what always runs
+     * beside the jobs. The rest is the ceiling: a job asking more is refused,
+     * and a plane that claims by room offers none. A session may ask the
+     * whole budget. None is reserved where it is 0.
+     */
+    memoryReservedGib: nonnegativeSchema.max(freeGibMax).default(0),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

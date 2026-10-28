@@ -51,6 +51,7 @@ import {
 } from "@chuggy/worker-core/poolRunner.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
+import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
 import {
   claudeCredentialFileRefusal,
@@ -131,6 +132,27 @@ export function poolSocket(runtime) {
       `the control socket ${socket} is longer than the ${String(socketPathBytesMax)} bytes macOS binds a socket at`,
     );
   return socket;
+}
+
+/**
+ * The lock a service takes to start a job into docker's memory: one for every
+ * pool's agent of this user, since every one runs in the one VM.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerMemoryLock(paths) {
+  return join(paths.runtime, "memory", "docker.lock");
+}
+
+/**
+ * The lock a service takes to ask a plane that claims by room for jobs, so
+ * no two are given the same room: one for every pool's agent of this user,
+ * beside the memory lock.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerClaimLock(paths) {
+  return join(paths.runtime, "memory", "docker.claim");
 }
 
 export function runnerEngine() {
@@ -285,6 +307,10 @@ export async function runnerParts(setup, host) {
       images: config.images,
       imageRecord: join(paths.images, "docker.json"),
       imageUnusedSecsMax: config.imageUnusedSecsMax,
+      memoryFreeBytesMin: memoryFreeBytes(config),
+      memoryReservedBytes: memoryReservedBytes(config),
+      memoryLock: runnerMemoryLock(paths),
+      memoryClaimLock: runnerClaimLock(paths),
     },
     {
       engine,

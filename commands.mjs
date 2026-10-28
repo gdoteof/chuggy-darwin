@@ -31,6 +31,7 @@ import {
 } from "@chuggy/worker-core/register.mjs";
 
 import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
+import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
   launchAgentBaseCharsMax,
@@ -174,9 +175,12 @@ async function status(call) {
     answered === undefined ? "service: not running" : "service: running",
   );
   call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
+  call.host.out(
+    `memory: ${await memoryBudgetSaid(setup.config, runner.engine)}`,
+  );
   for (const placement of answered?.inFlight ?? [])
     call.host.out(
-      `${placement.name}  ${placement.kind.toLowerCase()}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}`,
+      `${placement.name}  ${placement.kind.toLowerCase()}  ${placement.phase.toLowerCase()}  ${placement.image}  ${placement.assignment}${placement.waiting === undefined ? "" : `  waiting: ${placement.waiting}`}`,
     );
   for (const container of containers)
     call.host.out(

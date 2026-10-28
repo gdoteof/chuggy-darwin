@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +9,7 @@ import test from "node:test";
 
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
+import { heldLabel } from "@chuggy/worker-core/engineArgv.mjs";
 import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
 
 import { fakeEngine } from "./engine.fixture.mjs";
@@ -20,6 +22,8 @@ import {
   poolSocket,
   runnerDirectories,
   runnerLeftoversRemoved,
+  runnerClaimLock,
+  runnerMemoryLock,
   runnerParts,
   runnerSetup,
   socketPathBytesMax,
@@ -232,6 +236,137 @@ test("a run removes a job's image it pulled once unused for as long as its file 
     await runner.backend.settled();
     assert.deepEqual(removed, kept ? [] : [image], String(imageUnusedSecsMax));
   }
+});
+
+/** A power assertion that keeps nothing awake, for a suite that holds work. */
+const unpowered = { held: () => undefined, asserted: () => false };
+
+/**
+ * Docker in a VM of 16 GiB, whose containers outside every pool use `usedGib`.
+ *
+ * @param {number} usedGib
+ */
+function vmUsing(usedGib) {
+  const { engine, state } = fakeEngine();
+  state.machine = { ...state.machine, memoryBytes: 16 * 2 ** 30 };
+  state.containers.set("chuggy-jobs-postgres", {
+    id: "id-postgres",
+    name: "chuggy-jobs-postgres",
+    labels: {},
+    status: "running",
+    image: "postgres",
+    usedBytes: usedGib * 2 ** 30,
+  });
+  return { engine, state };
+}
+
+test("every pool's agent of a user takes one memory lock and one claim lock, in the runner's runtime directory, since every one runs in the one VM", () => {
+  const paths = runnerPaths("/Users/shame");
+  assert.equal(
+    runnerMemoryLock(paths),
+    "/Users/shame/Library/Caches/chuggy-darwin/memory/docker.lock",
+  );
+  assert.equal(
+    runnerClaimLock(paths),
+    "/Users/shame/Library/Caches/chuggy-darwin/memory/docker.claim",
+  );
+});
+
+test("a run's memory budget is the VM's memory less the GiB its file keeps free, none unless it says, and it takes no job without room", async (t) => {
+  for (const [memoryFreeGibMin, usedGib, taken] of /** @type {const} */ ([
+    [undefined, 15.5, true],
+    [undefined, 15.6, false],
+    [4, 11.6, false],
+    [2, 13.5, true],
+  ])) {
+    const label = `${String(memoryFreeGibMin)} with ${String(usedGib)} used`;
+    const { home, poolFile } = await runnerFixture(t, {
+      runner: memoryFreeGibMin === undefined ? {} : { memoryFreeGibMin },
+    });
+    const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: vmUsing(usedGib).engine,
+      power: unpowered,
+    });
+    await runner.client.backend.held();
+    assert.equal(runner.client.backend.jobsTaken?.(false), taken, label);
+  }
+});
+
+test("a run's ceiling for a job is its budget less the GiB its file reserves, none unless it says, and its agent claims jobs under the VM's claim lock", async (t) => {
+  for (const [memoryReservedGib, ceilingMib] of /** @type {const} */ ([
+    [undefined, 16 * 1024],
+    [6, 10 * 1024],
+    [20, 0],
+  ])) {
+    const { home, poolFile, paths } = await runnerFixture(t, {
+      runner: memoryReservedGib === undefined ? {} : { memoryReservedGib },
+    });
+    const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: vmUsing(0).engine,
+      power: unpowered,
+    });
+    await runner.client.backend.held();
+    assert.deepEqual(runner.client.backend.memoryRoom?.(), {
+      roomMib: 16 * 1024,
+      ceilingMib,
+    });
+    const lock = runnerClaimLock(paths);
+    const release = await runner.client.backend.claimed?.();
+    assert.ok(release !== undefined);
+    assert.equal(existsSync(lock), true);
+    await release();
+    assert.equal(existsSync(lock), false);
+  }
+});
+
+test("every pool's agent of a user starts its jobs under the one memory lock of the VM", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const otherFile = await ownerOnly(
+    join(paths.pools, "vteng.chuggy.other.json"),
+    JSON.stringify({ ...fixturePool, pool: "other" }),
+  );
+  const lock = runnerMemoryLock(paths);
+  const { engine } = vmUsing(0);
+  /** @type {boolean[]} */
+  const lockedAtHold = [];
+  const watched = {
+    ...engine,
+    /** @type {typeof engine.exec} */
+    exec: (argv, options) => {
+      if (
+        argv[0] === "volume" &&
+        argv[1] === "create" &&
+        argv.some((arg) => arg.startsWith(`${heldLabel}=`))
+      )
+        lockedAtHold.push(existsSync(lock));
+      return engine.exec(argv, options);
+    },
+  };
+  for (const [file, name] of /** @type {const} */ ([
+    [poolFile, "asg-1"],
+    [otherFile, "asg-2"],
+  ])) {
+    const runner = await runnerParts(await runnerSetup(file, home), {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: watched,
+      power: unpowered,
+    });
+    await runner.client.backend.held();
+    await runner.backend.place(
+      { ...assignment(), assignment: name, memoryMib: 512 },
+      "Job",
+    );
+    await runner.backend.settled();
+  }
+  assert.deepEqual(lockedAtHold, [true, true]);
 });
 
 test("docker's machine is its VM's size and architecture, named as Node names one, and refused when docker cannot be asked or answers something else", async () => {

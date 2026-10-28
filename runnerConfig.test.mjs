@@ -87,6 +87,8 @@ test("the runner's file takes the limits' defaults, and refuses an engine, since
   assert.deepEqual(config.images, []);
   assert.deepEqual(config.pools, {});
   assert.equal(config.imageUnusedSecsMax, 604_800);
+  assert.equal(config.memoryFreeGibMin, 0);
+  assert.equal(config.memoryReservedGib, 0);
   const engined = await runnerFixture(t, { runner: { engine: "docker" } });
   await assert.rejects(runnerConfig(engined.paths.config), /engine/u);
 });
@@ -477,6 +479,23 @@ test("a job's image this runner pulled is kept a week unused unless the file say
       runner: { imageUnusedSecsMax },
     });
     await assert.rejects(runnerConfig(paths.config), /imageUnusedSecsMax/u);
+  }
+});
+
+test("what the VM keeps free of its memory, and what it reserves of that memory from jobs, is any whole GiB the file sets, 0 among them", async (t) => {
+  const most = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
+  for (const key of /** @type {const} */ ([
+    "memoryFreeGibMin",
+    "memoryReservedGib",
+  ])) {
+    for (const gib of [0, 50, most]) {
+      const { paths } = await runnerFixture(t, { runner: { [key]: gib } });
+      assert.equal((await runnerConfig(paths.config))[key], gib);
+    }
+    for (const gib of [-1, 1.5, "20", most + 1]) {
+      const { paths } = await runnerFixture(t, { runner: { [key]: gib } });
+      await assert.rejects(runnerConfig(paths.config), new RegExp(key, "u"));
+    }
   }
 });
 

@@ -16,6 +16,7 @@ export const inFlightFixture = {
   name: "chuggy-shame-x",
   image: "i",
   phase: "Pulling",
+  memoryMib: 4096,
   deadlineEpochSecs: 1,
 };
 

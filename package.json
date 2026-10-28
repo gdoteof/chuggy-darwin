@@ -38,6 +38,7 @@
     "doctor.mjs",
     "launchAgent.mjs",
     "mcp.mjs",
+    "memoryFree.mjs",
     "power.mjs",
     "runner.mjs",
     "runnerConfig.mjs",
