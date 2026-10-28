@@ -33,7 +33,7 @@ import {
 
 import { colimaCli } from "./colimaVm.mjs";
 import { diskFloorSaid } from "./diskFree.mjs";
-import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
+import { agentVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
@@ -58,9 +58,9 @@ import {
   scratchRemovedOnSignal,
 } from "./runner.mjs";
 import {
-  runnerClaudeHanded,
   runnerConfig,
   runnerConfigLimits,
+  runnerCredentialsHanded,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -234,7 +234,7 @@ async function doctor(call) {
     uid: call.host.uid,
     home: call.host.home,
     path: call.host.environment.PATH,
-    claudeVersion: claudeVersionAsked,
+    agentVersion: agentVersionAsked,
     parts: {
       engine: () => call.host.engine ?? runnerEngine(),
       colima: () => call.host.colima ?? colimaCli(),
@@ -431,7 +431,11 @@ async function registerAgentsRead(file, hostJobs) {
     };
   }
   return {
-    agents: registerAgents(runnerClaudeHanded(config), config.images, hostJobs),
+    agents: registerAgents(
+      runnerCredentialsHanded(config),
+      config.images,
+      hostJobs,
+    ),
   };
 }
 

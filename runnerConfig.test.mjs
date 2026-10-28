@@ -12,6 +12,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  claudeCredentialDescribed,
   claudeCredentialProviderVariables,
   claudeCredentialVariables,
 } from "@chuggy/worker-core/claudeCredential.mjs";
@@ -19,8 +20,9 @@ import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 
 import { ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import {
-  claudeCredentialFileRefusal,
-  runnerClaudeHanded,
+  credentialFileRefusal,
+  runnerCredentialDescribed,
+  runnerCredentialsHanded,
   runnerConfig,
   runnerConfigLimits,
   runnerPoolLimits,
@@ -107,7 +109,11 @@ test("a token file the runner owns alone, under the home the VM shares, can be h
   const { home, tokenFile } = await runnerFixture(t);
   const uid = /** @type {() => number} */ (process.getuid)();
   assert.equal(
-    await claudeCredentialFileRefusal(subscription, tokenFile, { uid, home }),
+    await credentialFileRefusal(
+      claudeCredentialDescribed(subscription),
+      tokenFile,
+      { uid, home },
+    ),
     undefined,
   );
 });
@@ -125,7 +131,11 @@ test("a token file outside the home, linked to from inside it, or named outside 
   for (const file of [outside, linkedOut, linkedIn])
     assert.match(
       /** @type {string} */ (
-        await claudeCredentialFileRefusal(subscription, file, { uid, home })
+        await credentialFileRefusal(
+          claudeCredentialDescribed(subscription),
+          file,
+          { uid, home },
+        )
       ),
       /^the Claude token file .* is not under .*, or leads outside it, and .* is the only directory Colima shares with its VM by default/u,
       file,
@@ -133,11 +143,80 @@ test("a token file outside the home, linked to from inside it, or named outside 
   const linkedWithin = join(home, "within");
   await symlink(tokenFile, linkedWithin);
   assert.equal(
-    await claudeCredentialFileRefusal(subscription, linkedWithin, {
-      uid,
-      home,
-    }),
+    await credentialFileRefusal(
+      claudeCredentialDescribed(subscription),
+      linkedWithin,
+      {
+        uid,
+        home,
+      },
+    ),
     undefined,
+  );
+});
+
+/**
+ * Catches a Codex credential's file a bind mount cannot name, or a line
+ * naming more than it, accepted; one named and not handed to the backends as
+ * Codex's; or one handed where the file names none.
+ */
+test("a file may name a Codex credential's auth.json beside the Claude one, handed to the backends as Codex's, and one naming none hands no other agent's", async (t) => {
+  const authFile = "/Users/you/.codex/auth.json";
+  const { paths, tokenFile } = await runnerFixture(t, {
+    runner: { codexCredential: { authFile } },
+  });
+  const read = await runnerConfig(paths.config);
+  assert.deepEqual(read.codexCredential, { authFile });
+  assert.deepEqual(runnerCredentialsHanded(read), {
+    tokenFile,
+    claudeCredential: subscription,
+    agentCredentialFiles: { Codex: authFile },
+  });
+  for (const [codexCredential, why] of [
+    [
+      { authFile: "auth.json" },
+      /codexCredential\.authFile must be an absolute path/u,
+    ],
+    [
+      { authFile: "/a,readonly=false" },
+      /codexCredential\.authFile cannot be named in a bind mount/u,
+    ],
+    [
+      { authFile, kind: "ChatGPT" },
+      /codexCredential Unrecognized key: "kind"/u,
+    ],
+    [{}, /codexCredential\.authFile Invalid input/u],
+  ]) {
+    const refused = await runnerFixture(t, { runner: { codexCredential } });
+    await assert.rejects(
+      runnerConfig(refused.paths.config),
+      why,
+      JSON.stringify(codexCredential),
+    );
+  }
+});
+
+/**
+ * Catches the Codex file's refusal naming it as Claude's, or telling its
+ * owner to save a Claude credential there.
+ */
+test("a Codex credential's file a job cannot be handed is refused as a Claude one's is, naming the Codex auth file and how to make one", async (t) => {
+  const { home } = await runnerFixture(t);
+  const uid = /** @type {() => number} */ (process.getuid)();
+  const file = join(home, ".codex", "auth.json");
+  const codex = runnerCredentialDescribed(subscription, "Codex");
+  assert.equal(
+    await credentialFileRefusal(codex, file, { uid, home }),
+    `the Codex auth file ${file} cannot be found; run codex login, which writes it to ~/.codex/auth.json`,
+  );
+  await ownerOnly(file, "");
+  assert.equal(
+    await credentialFileRefusal(codex, file, { uid, home }),
+    `the Codex auth file ${file} is empty; run codex login, which writes it to ~/.codex/auth.json`,
+  );
+  assert.deepEqual(
+    runnerCredentialDescribed(subscription, "Claude"),
+    claudeCredentialDescribed(subscription),
   );
 });
 
@@ -146,7 +225,11 @@ test("a token file anyone else can read, that is empty, missing, or another user
   const uid = /** @type {() => number} */ (process.getuid)();
   /** @param {string} file */
   const refusal = async (file, runner = { uid, home }) =>
-    (await claudeCredentialFileRefusal(subscription, file, runner)) ?? "";
+    (await credentialFileRefusal(
+      claudeCredentialDescribed(subscription),
+      file,
+      runner,
+    )) ?? "";
   assert.match(
     await refusal(tokenFile, { uid: uid + 1, home }),
     /is owned by uid \d+, not by this runner's uid \d+$/u,
@@ -190,8 +273,8 @@ test("a Claude credential's file a job cannot be handed is refused, naming the f
     ],
   ])
     assert.equal(
-      await claudeCredentialFileRefusal(
-        /** @type {any} */ (setting),
+      await credentialFileRefusal(
+        claudeCredentialDescribed(/** @type {any} */ (setting)),
         /** @type {string} */ (file),
         { uid, home },
       ),
@@ -208,7 +291,7 @@ test("a file names a Claude credential of any kind in claudeCredential, read as 
     assert.deepEqual(read.claudeCredential, claudeCredential);
     assert.equal("claudeTokenFile" in read, false);
     const { kind, ...rest } = claudeCredential;
-    const handed = runnerClaudeHanded(read);
+    const handed = runnerCredentialsHanded(read);
     assert.equal(
       handed.tokenFile,
       rest.tokenFile ?? rest.apiKeyFile ?? rest.credentialsFile,
@@ -216,9 +299,10 @@ test("a file names a Claude credential of any kind in claudeCredential, read as 
     assert.equal(handed.claudeCredential.kind, kind);
   }
   const { paths, tokenFile } = await runnerFixture(t);
-  assert.deepEqual(runnerClaudeHanded(await runnerConfig(paths.config)), {
+  assert.deepEqual(runnerCredentialsHanded(await runnerConfig(paths.config)), {
     tokenFile,
     claudeCredential: subscription,
+    agentCredentialFiles: {},
   });
 });
 

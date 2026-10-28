@@ -34,6 +34,7 @@ import {
   hostEnvironmentRefusal,
   hostTimeoutSecsMax,
 } from "@chuggy/worker-core/hostBackend.mjs";
+import { jobAgentCapability } from "@chuggy/worker-core/job.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import {
   poolIdentityPersonal,
@@ -57,8 +58,10 @@ import {
   vmPlatformsFound,
 } from "./runner.mjs";
 import {
-  claudeCredentialFileRefusal,
+  codexCredentialDescribed,
+  credentialFileRefusal,
   runnerClaudeCredential,
+  runnerCodexAgent,
   runnerConfig,
   runnerConfigLimits,
   runnerPoolName,
@@ -85,7 +88,7 @@ import {
  * @property {number} uid this process's
  * @property {string} home the home docker's VM shares
  * @property {string | undefined} path this process's PATH
- * @property {(file: string) => Promise<string | undefined>} claudeVersion what a `claude` says its version is
+ * @property {(file: string) => Promise<string | undefined>} agentVersion what an agent's command, `claude` or `codex`, says its version is
  * @property {DoctorParts} parts
  */
 
@@ -126,22 +129,22 @@ function hostJobsChecked(config) {
   return "a job that pins no image and names the Mac's platform runs on the Mac itself, unisolated";
 }
 
-/** The cap on asking a `claude` its version, which guards a hung one and not a slow one. */
-const claudeVersionTimeoutMs = 30_000;
+/** The cap on asking an agent's command its version, which guards a hung one and not a slow one. */
+const agentVersionTimeoutMs = 30_000;
 
 /**
- * What a `claude` says its version is, the first line it prints, or nothing
- * where it prints none. It is run with `execFile`, never a shell.
+ * What an agent's command says its version is, the first line it prints, or
+ * nothing where it prints none. It is run with `execFile`, never a shell.
  *
  * @param {string} file
  * @returns {Promise<string | undefined>}
  */
-export function claudeVersionAsked(file) {
+export function agentVersionAsked(file) {
   return new Promise((resolve) => {
     execFile(
       file,
       ["--version"],
-      { timeout: claudeVersionTimeoutMs, encoding: "utf8" },
+      { timeout: agentVersionTimeoutMs, encoding: "utf8" },
       (error, stdout) => {
         const line = stdout.split("\n")[0].trim();
         resolve(error === null && line !== "" ? line : undefined);
@@ -175,32 +178,34 @@ async function hostJobPath(input, config) {
 }
 
 /**
- * The `claude` a job on the Mac itself runs, as the PATH it is started with
- * finds it, or why there is none: a warning, which passes, since a job that
- * runs no Claude Code needs none.
+ * The agent's command a job on the Mac itself runs, as the PATH it is started
+ * with finds it, or why there is none: a warning, which passes, since a job
+ * that runs another agent needs none.
  *
  * @param {DoctorInput} input
  * @param {RunnerConfig} config
+ * @param {string} command `claude` or `codex`
+ * @param {string} runtime what the command is, as a person names it
  * @returns {Promise<{found: string} | {missing: string}>}
  */
-async function hostClaudeFound(input, config) {
+async function hostAgentFound(input, config, command, runtime) {
   const [path, whose] = await hostJobPath(input, config);
   for (const directory of path.split(delimiter)) {
     if (!isAbsolute(directory)) continue;
-    const file = join(directory, "claude");
+    const file = join(directory, command);
     try {
       await access(file, constants.X_OK);
       if (!(await stat(file)).isFile()) continue;
     } catch {
       continue;
     }
-    const version = await input.claudeVersion(file);
+    const version = await input.agentVersion(file);
     return {
       found: `a job on the Mac itself runs ${file}, ${version ?? "which says no version"}, found on ${whose}`,
     };
   }
   return {
-    missing: `no claude is on ${whose}, ${path === "" ? "which is empty" : path}, so a job on the Mac itself runs no Claude Code`,
+    missing: `no ${command} is on ${whose}, ${path === "" ? "which is empty" : path}, so a job on the Mac itself runs no ${runtime}`,
   };
 }
 
@@ -222,10 +227,11 @@ async function claudeCredentialFinding(input, config, host) {
   const file = claudeCredentialFile(credential);
   const setting = claudeCredentialSetting(credential);
   const { label } = claudeCredentialDescribed(setting);
-  let refusal = await claudeCredentialFileRefusal(setting, file, {
-    uid: input.uid,
-    home: input.home,
-  });
+  let refusal = await credentialFileRefusal(
+    claudeCredentialDescribed(setting),
+    file,
+    { uid: input.uid, home: input.home },
+  );
   if (refusal === undefined)
     try {
       const text = (await readFile(file, "utf8")).trim();
@@ -242,15 +248,154 @@ async function claudeCredentialFinding(input, config, host) {
   ].join(", ");
   const detail = `${named}, from the ${label} ${file}, this runner's own`;
   if (!host) return { check, passed: true, detail };
-  const claude = await hostClaudeFound(input, config);
-  return "found" in claude
-    ? { check, passed: true, detail: `${detail}; ${claude.found}` }
+  return hostAgentFinding(
+    check,
+    detail,
+    await hostAgentFound(input, config, "claude", "Claude Code"),
+  );
+}
+
+/**
+ * A credential's finding, which passed, with the agent's command a job on
+ * the Mac itself runs, warned of where there is none.
+ *
+ * @param {string} check
+ * @param {string} detail
+ * @param {{found: string} | {missing: string}} command
+ * @returns {DoctorFinding}
+ */
+function hostAgentFinding(check, detail, command) {
+  return "found" in command
+    ? { check, passed: true, detail: `${detail}; ${command.found}` }
     : {
         check,
         passed: true,
         warning: true,
-        detail: `${detail}; ${claude.missing}`,
+        detail: `${detail}; ${command.missing}`,
       };
+}
+
+/** The capability a pool advertises to be handed jobs requiring Codex. */
+const codexCapability = jobAgentCapability(runnerCodexAgent);
+
+/**
+ * The Codex credential the runner's file names, its file held to a run's
+ * rule and read as a JSON object, and whether a pool here advertises
+ * `Agent:Codex`, which is what brings a job its file; on a pool registered
+ * with `--host`, the `codex` a job on the Mac itself runs. Where the file
+ * names none, a warning only where this pool advertises Codex, and otherwise
+ * nothing.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @param {PoolCredentials | undefined} credentials this pool's
+ * @returns {Promise<DoctorFinding | undefined>}
+ */
+async function codexCredentialFinding(input, config, credentials) {
+  const check = "Codex credential";
+  const advertised =
+    credentials === undefined
+      ? []
+      : advertisedAgents(input, config, credentials);
+  if (config.codexCredential === undefined)
+    return advertised.includes(codexCapability)
+      ? {
+          check,
+          passed: true,
+          warning: true,
+          detail: `this pool advertises ${codexCapability} and ${input.paths.config} names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth.json`,
+        }
+      : undefined;
+  const file = config.codexCredential.authFile;
+  const refusal =
+    (await credentialFileRefusal(codexCredentialDescribed, file, {
+      uid: input.uid,
+      home: input.home,
+    })) ?? (await codexAuthRefusal(file));
+  if (refusal !== undefined) return { check, passed: false, detail: refusal };
+  const detail = `the ${codexCredentialDescribed.label} ${file}, this runner's own`;
+  if (!(await codexAdvertised(input, config, advertised)))
+    return {
+      check,
+      passed: true,
+      warning: true,
+      detail: `${detail}; no pool here advertises ${codexCapability}, since no images entry declares it and no pool here was registered with --host, so no job requiring ${codexCapability} reaches this runner`,
+    };
+  if (credentials?.host !== true) return { check, passed: true, detail };
+  return hostAgentFinding(
+    check,
+    detail,
+    await hostAgentFound(input, config, "codex", "Codex"),
+  );
+}
+
+/**
+ * Why the Codex credential's file is no `auth.json` a job's core reads, or
+ * nothing: it must be a JSON object. Neither what it holds nor the parser's
+ * message is named, since either may quote the credential.
+ *
+ * @param {string} file
+ * @returns {Promise<string | undefined>}
+ */
+async function codexAuthRefusal(file) {
+  const { label, remedy } = codexCredentialDescribed;
+  let text;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    return `the ${label} ${file} cannot be read`;
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    document = undefined;
+  }
+  return typeof document === "object" &&
+    document !== null &&
+    !Array.isArray(document)
+    ? undefined
+    : `the ${label} ${file} is not a JSON object; ${remedy}`;
+}
+
+/**
+ * What a pool's run advertises but the platforms docker's VM runs, which
+ * every pool here shares; nothing where its run would be refused.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @param {PoolCredentials} credentials
+ */
+function advertisedAgents(input, config, credentials) {
+  try {
+    return runnerCapabilities({ credentials, config, paths: input.paths }, []);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether this pool's run or that of another pool file in the pools
+ * directory advertises `Agent:Codex`; a file that cannot be read, or whose
+ * run would be refused, advertises nothing.
+ *
+ * @param {DoctorInput} input
+ * @param {RunnerConfig} config
+ * @param {readonly string[]} advertised what this pool's run advertises
+ */
+async function codexAdvertised(input, config, advertised) {
+  if (advertised.includes(codexCapability)) return true;
+  for (const name of await readdir(input.paths.pools).catch(() => [])) {
+    const credentials = await poolCredentials(
+      join(input.paths.pools, name),
+    ).catch(() => undefined);
+    if (
+      credentials !== undefined &&
+      advertisedAgents(input, config, credentials).includes(codexCapability)
+    )
+      return true;
+  }
+  return false;
 }
 
 /**
@@ -497,10 +642,13 @@ export async function doctorFindings(input) {
       true,
       poolSocket(poolRuntimeDirectory(input.paths, credentials)),
     ]);
-  if (config !== undefined)
+  if (config !== undefined) {
     findings.push(
       await claudeCredentialFinding(input, config, credentials?.host === true),
     );
+    const codex = await codexCredentialFinding(input, config, credentials);
+    if (codex !== undefined) findings.push(codex);
+  }
   if (credentials?.host === true && config !== undefined)
     await checked(findings, "host jobs", async () => [
       true,

@@ -1,13 +1,15 @@
 /**
- * The runner's own file, and whether it can hand a job its Claude credential's
- * file. The file is refused unless only its owner can read or write it, and is
- * read strictly, so a misspelt key is an error rather than a default; a pool's
+ * The runner's own file, and whether it can hand a job a credential's file.
+ * The file is refused unless only its owner can read or write it, and is read
+ * strictly, so a misspelt key is an error rather than a default; a pool's
  * name in `pools` is not a key of the file's own, and `doctor` checks it
  * against the pool files instead. The pool's credentials are the worker core's
  * to read.
  *
  * THE FILE NAMES ONE CLAUDE CREDENTIAL, by `claudeCredential` of any kind the
- * core takes or by `claudeTokenFile`, a subscription's.
+ * core takes or by `claudeTokenFile`, a subscription's, and may name another
+ * agent's beside it, which a job requiring that agent is handed in its place:
+ * Codex's by `codexCredential`.
  *
  * Docker is the one engine, reached in the Linux VM Colima runs. Its default
  * shares only the user's home with the VM, so a mount from anywhere else finds
@@ -122,6 +124,10 @@ export const runnerConfigSchema = z
     claudeTokenFile: credentialFileSchema.optional(),
     /** The credential Claude Code runs on, of any kind, in place of `claudeTokenFile`. */
     claudeCredential: credentialSchema.optional(),
+    /** The `auth.json` `codex login` writes, which a job requiring `Agent:Codex` is handed. */
+    codexCredential: z
+      .strictObject({ authFile: credentialFileSchema })
+      .optional(),
     timeoutSecsMax: positiveSchema,
     outputBytesMax: positiveSchema,
     environment: environmentSchema.default({}),
@@ -256,20 +262,48 @@ export function runnerClaudeCredential(config) {
   return { kind: "Subscription", tokenFile: config.claudeTokenFile };
 }
 
+/** The agent `codexCredential` is the credential of, as an `Agent:` capability names it. */
+export const runnerCodexAgent = "Codex";
+
+/** How a refusal names the Codex credential's file, and what its owner does to make one. */
+export const codexCredentialDescribed = {
+  label: "Codex auth file",
+  remedy: "run codex login, which writes it to ~/.codex/auth.json",
+};
+
 /**
- * What each workload is handed of a checked file's Claude credential: the
- * file, and the setting that names its kind, which every run names so that
- * the core withholds what would choose another.
+ * What the backends are handed of a checked file's credentials: the Claude
+ * credential's file and the setting that names its kind, which every run
+ * names so that the core withholds what would choose another, and the file of
+ * each other agent it names a credential for, by that agent's name.
  *
  * @param {RunnerConfig} config
- * @returns {{tokenFile: string, claudeCredential: ClaudeCredentialSetting}}
+ * @returns {{tokenFile: string, claudeCredential: ClaudeCredentialSetting, agentCredentialFiles: Record<string, string>}}
  */
-export function runnerClaudeHanded(config) {
+export function runnerCredentialsHanded(config) {
   const credential = runnerClaudeCredential(config);
   return {
     tokenFile: claudeCredentialFile(credential),
     claudeCredential: claudeCredentialSetting(credential),
+    agentCredentialFiles:
+      config.codexCredential === undefined
+        ? {}
+        : { [runnerCodexAgent]: config.codexCredential.authFile },
   };
+}
+
+/**
+ * How a refusal names the credential file of an agent, and what its owner
+ * does to make one: Claude's by the kind its setting names.
+ *
+ * @param {ClaudeCredentialSetting} claudeCredential
+ * @param {string} agent
+ * @returns {{label: string, remedy: string}}
+ */
+export function runnerCredentialDescribed(claudeCredential, agent) {
+  return agent === runnerCodexAgent
+    ? codexCredentialDescribed
+    : claudeCredentialDescribed(claudeCredential);
 }
 
 /**
@@ -383,20 +417,20 @@ function beneath(directory, path) {
 }
 
 /**
- * Why this runner cannot hand its jobs its Claude credential's file, or
- * nothing. The path a job's mount names must sit under the home the VM shares,
- * and so must the file it leads to, since the VM follows a link in its own
+ * Why this runner cannot hand its jobs a credential's file, or nothing. The
+ * path a job's mount names must sit under the home the VM shares, and so must
+ * the file it leads to, since the VM follows a link in its own
  * filesystem. The file must be the runner's own and no one else's on this Mac.
  * Only its metadata is read: the credential reaches the job by mount and never
  * this process.
  *
- * @param {ClaudeCredentialSetting} setting the kind the file is, which names it
+ * @param {{label: string, remedy: string}} described how the file is named, as `runnerCredentialDescribed` names it
  * @param {string} file
  * @param {{uid: number, home: string}} runner this process's uid, which must own the file, and the home the VM shares
  * @returns {Promise<string | undefined>}
  */
-export async function claudeCredentialFileRefusal(setting, file, runner) {
-  const { label, remedy } = claudeCredentialDescribed(setting);
+export async function credentialFileRefusal(described, file, runner) {
+  const { label, remedy } = described;
   let real;
   let realHome;
   let stats;

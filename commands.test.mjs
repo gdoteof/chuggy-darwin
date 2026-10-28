@@ -338,14 +338,23 @@ test("register --host declares the Mac's own platform after the VM's and writes 
   );
 });
 
-test("register declares the agents runner.json can run, Claude where an images entry declares it or with --host, once beside a --capability naming it", async (t) => {
+test("register declares the agents runner.json can run, Claude, and Codex where it names codexCredential, each where an images entry declares it or with --host, once beside a --capability naming it", async (t) => {
   const vm = "Platform:Linux:Arm64";
   const claude = { images: [{ image: "x", capabilities: ["Agent:Claude"] }] };
+  const codexCredential = { authFile: "/Users/you/.codex/auth.json" };
+  const codexImages = [{ image: "x", capabilities: ["Agent:Codex"] }];
   for (const [runner, argv, declared] of /** @type {const} */ ([
     [claude, [], [vm, "Agent:Claude"]],
     [claude, ["--capability", "Agent:Claude"], [vm, "Agent:Claude"]],
     [{}, ["--host"], [vm, "Platform:MacOS:Arm64", "Agent:Claude"]],
     [{}, [], [vm]],
+    [{ codexCredential, images: codexImages }, [], [vm, "Agent:Codex"]],
+    [{ images: codexImages }, [], [vm]],
+    [
+      { codexCredential },
+      ["--host"],
+      [vm, "Platform:MacOS:Arm64", "Agent:Claude", "Agent:Codex"],
+    ],
   ])) {
     const answer = answeringFetch(201, {
       ...registered,

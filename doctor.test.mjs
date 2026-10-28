@@ -23,7 +23,7 @@ const ownUid = process.getuid?.() ?? -1;
  *
  * @typedef {object} DoctorSeen what doctor is run with besides the files
  * @property {string} [path] its own PATH
- * @property {Record<string, string>} [claudeVersions] what each `claude` says its version is
+ * @property {Record<string, string>} [agentVersions] what each `claude` says its version is
  */
 
 /**
@@ -53,7 +53,7 @@ async function doctored(
     uid: ownUid,
     home,
     path: seen.path,
-    claudeVersion: async (file) => seen.claudeVersions?.[file],
+    agentVersion: async (file) => seen.agentVersions?.[file],
     parts: {
       engine: () => engine,
       colima: () =>
@@ -473,7 +473,7 @@ test("a Claude credential's file that is no credential of its kind, or lies outs
  * @property {string} [agentPath] the PATH an agent's property list names
  * @property {string} [agentPoolFile] the pool file it serves, the fixture's where absent
  * @property {string} [path] doctor's own
- * @property {Record<string, string>} [claudeVersions] the fixture's `claude`'s alone where absent
+ * @property {Record<string, string>} [agentVersions] the fixture's `claude`'s alone where absent
  * @property {Record<string, unknown>} [pool] a host pool's where absent
  */
 
@@ -534,7 +534,7 @@ async function hostClaudeSaid(t, claude, seen) {
     }
     return {
       path: seen.path,
-      claudeVersions: seen.claudeVersions ?? {
+      agentVersions: seen.agentVersions ?? {
         [claude]: "2.1.282 (Claude Code)",
       },
     };
@@ -573,7 +573,7 @@ test("on a pool registered with --host, the Claude credential check names the cl
       host: `a job on the Mac itself runs ${claude}, 2.1.282 (Claude Code), found on ${whose}`,
     });
   assert.deepEqual(
-    await hostClaudeSaid(t, claude, { path: bin, claudeVersions: {} }),
+    await hostClaudeSaid(t, claude, { path: bin, agentVersions: {} }),
     {
       warning: false,
       host: `a job on the Mac itself runs ${claude}, which says no version, found on doctor's own PATH`,
@@ -605,4 +605,217 @@ test("on a pool registered with --host, the Claude credential check warns, passi
   );
   await chmod(claude, 0o600);
   assert.equal((await hostClaudeSaid(t, claude, { path: bin })).warning, true);
+});
+
+/** The remedy a refusal of the Codex credential's file names. */
+const codexRemedy = "run codex login, which writes it to ~/.codex/auth.json";
+
+/** What the Codex fixture file holds that is secret, which no finding may print. */
+const codexSecret = "codex-refresh-token-fixture";
+
+/** A pool registered declaring `Agent:Codex`. */
+const codexPool = {
+  ...fixturePool,
+  capabilities: ["Platform:Linux:Arm64", "Agent:Codex"],
+};
+
+/** An image its owner lists as running Codex. */
+const codexImages = [
+  { image: "registry.example/codex", capabilities: ["Agent:Codex"] },
+];
+
+/**
+ * @typedef {object} CodexSeen
+ * @property {Record<string, unknown>} [pool] this pool's file, where not `codexPool`
+ * @property {Record<string, unknown>} [runner] the runner's file's keys beside its Claude token file and limits
+ * @property {boolean} [named] whether the runner's file names a Codex credential, which it does unless false
+ * @property {boolean} [absent] whether the auth file it names is missing
+ * @property {string} [text] what the Codex auth file holds, `{}` where absent
+ * @property {number} [mode] the auth file's mode, where not owner-only
+ * @property {boolean} [outside] whether the auth file lies outside the home
+ * @property {Record<string, Record<string, unknown>>} [registered] other pool files, by name
+ * @property {string} [path] doctor's own PATH
+ * @property {Record<string, string>} [agentVersions]
+ */
+
+/**
+ * The Codex credential check's line, or nothing, every line doctor printed,
+ * and the Codex auth file a runner's file names under the home, or outside
+ * it, holding `text`.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {CodexSeen} [seen]
+ */
+async function codexDoctored(t, seen = {}) {
+  let authFile = "";
+  const lines = await doctored(
+    t,
+    {},
+    { pool: seen.pool ?? codexPool },
+    async ({ home, paths, tokenFile }) => {
+      const directory = seen.outside
+        ? await mkdtemp(join(tmpdir(), "chuggy-darwin-codex-"))
+        : join(home, ".codex");
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      authFile = join(directory, "auth.json");
+      if (seen.absent !== true) {
+        await ownerOnly(authFile, seen.text ?? "{}");
+        if (seen.mode !== undefined) await chmod(authFile, seen.mode);
+      }
+      await runnerWritten(paths, {
+        claudeTokenFile: tokenFile,
+        ...(seen.named === false ? {} : { codexCredential: { authFile } }),
+        ...seen.runner,
+      });
+      for (const [name, pool] of Object.entries(seen.registered ?? {}))
+        await ownerOnly(join(paths.pools, name), JSON.stringify(pool));
+      return { path: seen.path, agentVersions: seen.agentVersions };
+    },
+  );
+  return {
+    authFile,
+    lines,
+    line: lines.find((line) => line.includes(" Codex credential: ")),
+  };
+}
+
+/**
+ * Catches the Codex file's check printing what it holds, or appearing on a
+ * runner neither whose file nor whose pool names Codex.
+ */
+test("the Codex credential check names its file and never what it holds, and is made only where the runner's file or the pool names Codex", async (t) => {
+  const { authFile, lines, line } = await codexDoctored(t, {
+    text: JSON.stringify({ tokens: { refresh_token: codexSecret } }),
+    runner: { images: codexImages },
+  });
+  assert.equal(
+    line,
+    `ok    Codex credential: the Codex auth file ${authFile}, this runner's own`,
+  );
+  assert.equal(lines.join("\n").includes(codexSecret), false);
+  const unnamed = await doctored(t);
+  assert.equal(
+    unnamed.some((said) => said.includes(" Codex credential: ")),
+    false,
+  );
+});
+
+/**
+ * Catches a Codex file no core could read passed, its text or a parser's
+ * message printed, or one a job cannot be handed passed.
+ */
+test("a Codex credential's file that is no JSON object, or that a job cannot be handed, fails the check, never naming what it holds", async (t) => {
+  for (const text of [
+    `["${codexSecret}"]`,
+    `{"refresh_token": ${codexSecret}`,
+    "null",
+    `"${codexSecret}"`,
+  ]) {
+    const { authFile, lines, line } = await codexDoctored(t, { text });
+    assert.equal(
+      line,
+      `FAIL  Codex credential: the Codex auth file ${authFile} is not a JSON object; ${codexRemedy}`,
+      text,
+    );
+    assert.equal(lines.join("\n").includes(codexSecret), false);
+  }
+  for (const [seen, detail] of /** @type {Array<[CodexSeen, RegExp]>} */ ([
+    [{ mode: 0o640 }, /is mode 640; only its owner may read or write it/u],
+    [{ absent: true }, /^the Codex auth file \S+ cannot be found; /u],
+    [
+      { outside: true },
+      /is not under \S+, or leads outside it, and \S+ is the only directory Colima shares with its VM by default/u,
+    ],
+  ])) {
+    const { line } = await codexDoctored(t, seen);
+    assert.match(line ?? "", /^FAIL {2}Codex credential: /u);
+    assert.match((line ?? "").slice("FAIL  Codex credential: ".length), detail);
+  }
+});
+
+/**
+ * Catches a pool whose Codex jobs are handed the Claude credential's file
+ * passing unwarned, or failing doctor, and one warned of that advertises no
+ * Codex.
+ */
+test("a pool advertising Agent:Codex is warned of, and passes, where the runner's file names no codexCredential, its Codex jobs handed the Claude credential's file", async (t) => {
+  for (const runner of [
+    { images: codexImages },
+    { capabilities: ["Agent:Codex"] },
+  ])
+    assert.match(
+      (await codexDoctored(t, { named: false, runner })).line ?? "",
+      /^warn {2}Codex credential: this pool advertises Agent:Codex and \/.*\/runner\.json names no codexCredential, so its Codex jobs are handed the Claude credential's file; add codexCredential to hand them a Codex auth\.json$/u,
+      JSON.stringify(runner),
+    );
+  assert.equal((await codexDoctored(t, { named: false })).line, undefined);
+});
+
+/**
+ * Catches a Codex credential no pool here brings a job to passing unwarned,
+ * or warned of where this pool or another here advertises Agent:Codex.
+ */
+test("a Codex credential no pool here advertises Agent:Codex for is warned of, and passes where an image, or another pool's host, runs Codex", async (t) => {
+  for (const seen of /** @type {CodexSeen[]} */ ([
+    { runner: { images: codexImages } },
+    {
+      registered: {
+        "vteng.chuggy.other.json": {
+          ...fixturePool,
+          pool: "other",
+          host: true,
+        },
+      },
+    },
+  ])) {
+    const { authFile, line } = await codexDoctored(t, seen);
+    assert.equal(
+      line,
+      `ok    Codex credential: the Codex auth file ${authFile}, this runner's own`,
+    );
+  }
+  for (const seen of /** @type {CodexSeen[]} */ ([
+    {},
+    { registered: { "vteng.chuggy.other.json": codexPool } },
+  ])) {
+    const { authFile, line } = await codexDoctored(t, seen);
+    assert.equal(
+      line,
+      `warn  Codex credential: the Codex auth file ${authFile}, this runner's own; no pool here advertises Agent:Codex, since no images entry declares it and no pool here was registered with --host, so no job requiring Agent:Codex reaches this runner`,
+    );
+  }
+});
+
+/**
+ * Catches a host job's Codex left unnamed, or its absence passing unwarned.
+ */
+test("on a pool registered with --host, the Codex credential check names the codex a job on the Mac itself runs, and warns, passing, where there is none", async (t) => {
+  const bin = await mkdtemp(join(tmpdir(), "chuggy-darwin-bin-"));
+  const empty = await mkdtemp(join(tmpdir(), "chuggy-darwin-empty-"));
+  t.after(() =>
+    Promise.all(
+      [bin, empty].map((directory) =>
+        rm(directory, { recursive: true, force: true }),
+      ),
+    ),
+  );
+  const codex = join(bin, "codex");
+  await writeFile(codex, "#!/bin/sh\n", { mode: 0o700 });
+  /** @param {string} path */
+  const found = (path) =>
+    codexDoctored(t, {
+      pool: { ...codexPool, host: true },
+      path,
+      agentVersions: { [codex]: "codex-cli 0.50.0" },
+    });
+  const named = await found(bin);
+  assert.equal(
+    named.line,
+    `ok    Codex credential: the Codex auth file ${named.authFile}, this runner's own; a job on the Mac itself runs ${codex}, codex-cli 0.50.0, found on doctor's own PATH`,
+  );
+  const none = await found(empty);
+  assert.equal(
+    none.line,
+    `warn  Codex credential: the Codex auth file ${none.authFile}, this runner's own; no codex is on doctor's own PATH, ${empty}, so a job on the Mac itself runs no Codex`,
+  );
 });

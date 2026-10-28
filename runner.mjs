@@ -58,9 +58,10 @@ import { diskFloorBytes, vmDiskFree } from "./diskFree.mjs";
 import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
 import {
-  claudeCredentialFileRefusal,
-  runnerClaudeHanded,
+  credentialFileRefusal,
   runnerConfig,
+  runnerCredentialDescribed,
+  runnerCredentialsHanded,
   runnerPoolLimits,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
@@ -274,7 +275,7 @@ export function runnerCapabilities(setup, vm) {
   const { credentials, config, paths } = setup;
   const advertised = registerAdvertised({
     platforms: [...vm, ...hostPlatformsDeclared(credentials, "MacOS")],
-    files: runnerClaudeHanded(config),
+    files: runnerCredentialsHanded(config),
     images: config.images,
     host: credentials.host === true,
     declared: config.capabilities,
@@ -362,17 +363,13 @@ export async function runnerParts(setup, host) {
           (await vmPlatformsFound(machine, colima)).platforms,
         );
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
-  const claude = runnerClaudeHanded(config);
-  const tokenFileRefusal = (/** @type {string} */ file) =>
-    claudeCredentialFileRefusal(claude.claudeCredential, file, {
-      uid: host.uid,
-      home: host.home,
-    });
+  const handed = runnerCredentialsHanded(config);
+  const tokenFileRefusal = credentialFileRefused(handed, host);
   const container = containerBackend(
     {
       engine: "docker",
       pool: credentials,
-      ...claude,
+      ...handed,
       registryHost: credentials.registryHost,
       dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
@@ -402,7 +399,7 @@ export async function runnerParts(setup, host) {
       diskFree: () => vmDiskFree(engine, colima),
     },
   );
-  const backend = runnerHostRouted(setup, container, claude, {
+  const backend = runnerHostRouted(setup, container, handed, {
     log: host.log,
     tokenFileRefusal,
     ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
@@ -418,17 +415,34 @@ export async function runnerParts(setup, host) {
 }
 
 /**
+ * Why a job cannot be handed the credential file of the agent it requires, as
+ * both backends ask it.
+ *
+ * @param {ReturnType<typeof runnerCredentialsHanded>} handed
+ * @param {{uid: number, home: string}} runner this process's uid and the home the VM shares
+ * @returns {(file: string, agent: string) => Promise<string | undefined>}
+ */
+function credentialFileRefused(handed, runner) {
+  return (file, agent) =>
+    credentialFileRefusal(
+      runnerCredentialDescribed(handed.claudeCredential, agent),
+      file,
+      { uid: runner.uid, home: runner.home },
+    );
+}
+
+/**
  * The container backend, with the Mac beside it where the pool was registered
  * with `--host`, taking each job that pins no image and names the Mac's
  * platform.
  *
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
- * @param {ReturnType<typeof runnerClaudeHanded>} claude
+ * @param {ReturnType<typeof runnerCredentialsHanded>} handed
  * @param {import("@chuggy/worker-core/hostBackend.mjs").HostBackendSeams} seams
  * @returns {ContainerBackend}
  */
-function runnerHostRouted(setup, container, claude, seams) {
+function runnerHostRouted(setup, container, handed, seams) {
   const { credentials, config, paths } = setup;
   const platforms = hostPlatformsDeclared(credentials, "MacOS");
   if (platforms.length === 0) return container;
@@ -439,7 +453,7 @@ function runnerHostRouted(setup, container, claude, seams) {
         platforms,
         directory: join(paths.jobs, poolIdentityDigest(credentials)),
         logDir: paths.logs,
-        ...claude,
+        ...handed,
         timeoutSecsMax: config.timeoutSecsMax,
         outputBytesMax: config.outputBytesMax,
         environment: config.environment,
