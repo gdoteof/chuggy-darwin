@@ -55,6 +55,7 @@ import {
   poolSocket,
   rosettaPlatform,
   runnerCapabilities,
+  runnerReleasePrefix,
   vmPlatformsFound,
 } from "./runner.mjs";
 import {
@@ -81,6 +82,7 @@ import {
  * @property {() => import("./colimaVm.mjs").ColimaCli} colima
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["tokens"]} tokens
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["plane"]} plane
+ * @property {(config: RunnerConfig) => import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} updates the update a run would make of its runner
  *
  * @typedef {object} DoctorInput
  * @property {string} poolFile
@@ -615,6 +617,57 @@ async function runnerConfigChecked(input, findings) {
   return config;
 }
 
+/**
+ * A release one patch above this copy, from its own release downloads, as
+ * chuggy would name the next: the core's refusal of it is only of what keeps
+ * this install from taking a release.
+ *
+ * @param {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} runner
+ */
+function nextRelease(runner) {
+  const [major, minor, patch] = runner.version.split(".").map(Number);
+  const version = `${String(major)}.${String(minor)}.${String(patch + 1)}`;
+  return {
+    package: runner.package,
+    version,
+    url: `${runnerReleasePrefix}v${version}/${runner.package}-${version}.tgz`,
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+}
+
+/**
+ * Whether the runner updates itself and, where it does, whether this install
+ * can take a release: one that npm did not install globally, or that this
+ * user cannot write, cannot, and is warned of.
+ *
+ * @param {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} updates
+ * @returns {Promise<DoctorFinding>}
+ */
+async function updatesFinding(updates) {
+  const check = "updates";
+  if (!updates.on)
+    return {
+      check,
+      passed: true,
+      detail: "off: the runner's file sets autoUpdate to false",
+    };
+  const refusal = await updates.updater.refusal(
+    nextRelease(updates.updater.runner),
+  );
+  if (refusal === undefined)
+    return {
+      check,
+      passed: true,
+      detail: "on: a run installs the release chuggy names",
+    };
+  return {
+    check,
+    passed: true,
+    warning: true,
+    detail: `on, but this install cannot take a release: ${refusal}; install it with npm under a prefix you own, such as Homebrew's`,
+  };
+}
+
 /** @param {DoctorFinding} finding */
 export function findingLine(finding) {
   const label =
@@ -655,6 +708,8 @@ export async function doctorFindings(input) {
       hostJobsChecked(config),
     ]);
   findings.push(await agentFinding(input));
+  if (config !== undefined)
+    findings.push(await updatesFinding(input.parts.updates(config)));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(input, credentials, config, findings);

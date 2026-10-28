@@ -2,7 +2,9 @@
  * The `chuggy-darwin` commands. Each answers an exit status: 0 done, 1 failed,
  * 2 asked wrongly. `run` ends without failing only when the plane denies the
  * pool, which is done, since nothing but a new registration brings the pool
- * back. `once` fails on any pass that did not reconcile, a denial among them.
+ * back, and ends `updatedExitStatus` when it installed a release of itself to
+ * run again on. `once` fails on any pass that did not reconcile, a denial
+ * among them.
  */
 
 import { constants } from "node:fs";
@@ -17,7 +19,6 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import {
-  poolRunnerLoop,
   poolRunnerPassLine,
   poolRunnerPlane,
   poolRunnerTokens,
@@ -44,6 +45,7 @@ import {
   launchAgentPlist,
   launchAgentPoolFile,
   launchAgentRestart,
+  launchAgentRunning,
   shellQuoted,
 } from "./launchAgent.mjs";
 import {
@@ -53,8 +55,10 @@ import {
   runnerDirectories,
   runnerLeftoversRemoved,
   runnerEngine,
+  runnerLoop,
   runnerParts,
   runnerSetup,
+  runnerUpdates,
   scratchRemovedOnSignal,
 } from "./runner.mjs";
 import {
@@ -75,6 +79,11 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run uses and registration asks, when not docker
  * @property {import("./colimaVm.mjs").ColimaCli} [colima] what reaches docker's VM, when not colima
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
+ * @property {Partial<import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts>} [updatePorts] what an update reaches, where not the network, npm and this machine
+ * @property {string} packageName this copy's package, as its `package.json` names it
+ * @property {string} version this copy's, as its `package.json` names it
+ * @property {string} node this process's Node
+ * @property {string} nodeVersion that Node's, as `process.versions.node` says it
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
@@ -89,6 +98,7 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
        chuggy-darwin register --api <origin> --token=<token> [--pool <name> | --personal]
                               [--host] [--capability <token>]...
        chuggy-darwin mcp --site <origin> --workspace <workspace> --project <project>
+       chuggy-darwin --version
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
@@ -97,7 +107,8 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
                           platform, with --host this Mac's too, the agents
                           runner.json can run, and each --capability, which
                           the token must permit
-  run                     run the pool until the plane denies it
+  run                     run the pool until the plane denies it, or until
+                          it installs the release chuggy names
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
                           service is placing
@@ -110,6 +121,16 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
 The pool file is --pool, or ${poolFileVariable}.`;
 
 /**
+ * The copy of this runner that is speaking.
+ *
+ * @param {CliHost} host
+ * @returns {import("./runner.mjs").RunnerCopy}
+ */
+function runnerCopy(host) {
+  return { package: host.packageName, version: host.version, cli: host.cli };
+}
+
+/**
  * @param {CliCall} call
  * @param {{polls: boolean}} [command] `polls: false` for a command that never polls
  */
@@ -119,6 +140,7 @@ async function started(call, command = { polls: true }) {
     uid: call.host.uid,
     home: call.host.home,
     log: call.host.out,
+    runner: { package: call.host.packageName, version: call.host.version },
     engine: call.host.engine,
     colima: call.host.colima,
     tokens: call.host.tokens,
@@ -137,6 +159,11 @@ async function started(call, command = { polls: true }) {
  */
 async function run(call) {
   const { setup, runner } = await started(call);
+  const updates = runnerUpdates(
+    setup,
+    runnerCopy(call.host),
+    call.host.updatePorts,
+  );
   await runnerDirectories(setup.paths, runner.runtime);
   const server = await controlServer(runner.socket, runner.backend);
   try {
@@ -144,11 +171,12 @@ async function run(call) {
     scratchRemovedOnSignal(runner.runtime);
     if ((await jobNetwork(runner.engine, setup.config.network)) === "Created")
       call.host.out(`made the job network ${setup.config.network}`);
-    await poolRunnerLoop(runner.client, {
+    return await runnerLoop(runner.client, {
       sleep: (ms) => delay(ms),
       log: call.host.out,
+      updates,
+      underAgent: launchAgentRunning(call.host.environment, call.poolFile),
     });
-    return 0;
   } finally {
     server.close();
   }
@@ -226,21 +254,35 @@ async function stop(call) {
   return 1;
 }
 
-/** @param {CliCall} call */
+/**
+ * Which copy is speaking, under which Node, and then each check.
+ *
+ * @param {CliCall} call
+ */
 async function doctor(call) {
+  const { host } = call;
+  const paths = runnerPaths(host.home);
+  host.out(
+    `chuggy-darwin ${host.version} at ${host.cli}, under Node ${host.nodeVersion} at ${host.node}`,
+  );
   const findings = await doctorFindings({
     poolFile: call.poolFile,
-    paths: runnerPaths(call.host.home),
-    uid: call.host.uid,
-    home: call.host.home,
-    path: call.host.environment.PATH,
+    paths,
+    uid: host.uid,
+    home: host.home,
+    path: host.environment.PATH,
     agentVersion: agentVersionAsked,
     parts: {
-      engine: () => call.host.engine ?? runnerEngine(),
-      colima: () => call.host.colima ?? colimaCli(),
-      tokens: (credentials) =>
-        call.host.tokens ?? poolRunnerTokens(credentials),
-      plane: poolRunnerPlane,
+      engine: () => host.engine ?? runnerEngine(),
+      colima: () => host.colima ?? colimaCli(),
+      tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
+      plane: (credentials) =>
+        poolRunnerPlane(credentials, {
+          package: host.packageName,
+          version: host.version,
+        }),
+      updates: (config) =>
+        runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
     },
   });
   for (const finding of findings)
@@ -488,6 +530,21 @@ const commands = {
   "install-agent": installAgent,
 };
 
+/** Every option a command is parsed with. */
+const cliOptions = /** @type {const} */ ({
+  pool: { type: "string" },
+  api: { type: "string" },
+  token: { type: "string" },
+  personal: { type: "boolean" },
+  host: { type: "boolean" },
+  capability: { type: "string", multiple: true },
+  site: { type: "string" },
+  workspace: { type: "string" },
+  project: { type: "string" },
+  help: { type: "boolean", short: "h" },
+  version: { type: "boolean" },
+});
+
 /**
  * @param {readonly string[]} argv the arguments after the entry
  * @param {CliHost} host
@@ -498,18 +555,7 @@ export async function cliMain(argv, host) {
   try {
     parsed = parseArgs({
       args: [...argv],
-      options: {
-        pool: { type: "string" },
-        api: { type: "string" },
-        token: { type: "string" },
-        personal: { type: "boolean" },
-        host: { type: "boolean" },
-        capability: { type: "string", multiple: true },
-        site: { type: "string" },
-        workspace: { type: "string" },
-        project: { type: "string" },
-        help: { type: "boolean", short: "h" },
-      },
+      options: cliOptions,
       allowPositionals: true,
     });
   } catch (failure) {
@@ -520,6 +566,10 @@ export async function cliMain(argv, host) {
   const [name, ...positionals] = parsed.positionals;
   if (values.help === true || name === "help") {
     host.out(usage);
+    return 0;
+  }
+  if (values.version === true) {
+    host.out(`chuggy-darwin ${host.version}`);
     return 0;
   }
   if (name === "mcp") return await mcp(host, values, positionals);

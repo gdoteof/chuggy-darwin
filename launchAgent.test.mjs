@@ -9,6 +9,7 @@ import {
   launchAgentPath,
   launchAgentPlist,
   launchAgentPoolFile,
+  launchAgentRunning,
   shellQuoted,
 } from "./launchAgent.mjs";
 
@@ -100,4 +101,26 @@ test("an argument the operator is told is quoted for a shell only where it must 
   assert.equal(shellQuoted("/Users/a/x.plist"), "/Users/a/x.plist");
   assert.equal(shellQuoted("/Users/a b/x.plist"), "'/Users/a b/x.plist'");
   assert.equal(shellQuoted("it's"), "'it'\\''s'");
+});
+
+/**
+ * Catches a run started by hand, or by another pool's agent, told launchd
+ * will restart it, or the pool's own agent told to be started by hand.
+ */
+test("a run is its pool's agent only where launchd named it by the label of that pool file's agent", () => {
+  const poolFile = "/Users/you/.config/chuggy/pools/vteng.chuggy.shame.json";
+  for (const [environment, running] of /** @type {const} */ ([
+    [{ XPC_SERVICE_NAME: "chuggy-darwin.vteng.chuggy.shame" }, true],
+    [{ XPC_SERVICE_NAME: "chuggy-darwin.vteng.chuggy.other" }, false],
+    [{ XPC_SERVICE_NAME: "0" }, false],
+    [{}, false],
+  ]))
+    assert.equal(launchAgentRunning(environment, poolFile), running);
+  assert.equal(
+    launchAgentRunning(
+      { XPC_SERVICE_NAME: "chuggy-darwin.a b" },
+      "/Users/you/a b.json",
+    ),
+    false,
+  );
 });

@@ -96,6 +96,26 @@ test("the runner's file takes the limits' defaults, and refuses an engine, since
   await assert.rejects(runnerConfig(engined.paths.config), /engine/u);
 });
 
+test("the runner updates itself unless its file turns that off", async (t) => {
+  for (const [runner, autoUpdate] of /** @type {const} */ ([
+    [{}, true],
+    [{ autoUpdate: true }, true],
+    [{ autoUpdate: false }, false],
+  ])) {
+    const { paths } = await runnerFixture(t, { runner });
+    assert.equal((await runnerConfig(paths.config)).autoUpdate, autoUpdate);
+  }
+  for (const autoUpdate of ["false", 0, null]) {
+    const { paths } = await runnerFixture(t, { runner: { autoUpdate } });
+    await assert.rejects(runnerConfig(paths.config), {
+      message: new RegExp(
+        `^runner configuration ${paths.config}: autoUpdate Invalid input: expected boolean`,
+        "u",
+      ),
+    });
+  }
+});
+
 test("the runner's file is refused where anyone but its owner can read it", async (t) => {
   const { paths } = await runnerFixture(t);
   await chmod(paths.config, 0o644);

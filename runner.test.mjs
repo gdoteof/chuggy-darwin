@@ -25,12 +25,17 @@ import {
   runnerLeftoversRemoved,
   runnerCapabilities,
   runnerClaimLock,
+  runnerLoop,
   runnerMemoryLock,
   runnerParts,
+  runnerReleasePrefix,
   runnerSetup,
+  runnerUpdateLock,
+  runnerUpdates,
   socketPathBytesMax,
   vmPlatformsFound,
 } from "./runner.mjs";
+import { updatedExitStatus } from "./launchAgent.mjs";
 import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -536,8 +541,12 @@ test("a run holds the floor its file sets in GiB free where docker stores in Col
   }
 });
 
-test("every pool's agent of a user takes one memory lock and one claim lock, in the runner's runtime directory, since every one runs in the one VM", () => {
+test("every pool's agent of a user takes one install lock, and one memory lock and one claim lock, in the runner's runtime directory, since every one runs the one install in the one VM", () => {
   const paths = runnerPaths("/Users/shame");
+  assert.equal(
+    runnerUpdateLock(paths),
+    "/Users/shame/Library/Caches/chuggy-darwin/update.lock",
+  );
   assert.equal(
     runnerMemoryLock(paths),
     "/Users/shame/Library/Caches/chuggy-darwin/memory/docker.lock",
@@ -1168,4 +1177,128 @@ test("a pool registered with --host hands a job on the Mac requiring Agent:Codex
     codex,
   );
   assert.ok(!Object.hasOwn(started, claudeCredentialVariable));
+});
+
+/** A release of this package above the copy a suite's runs are made of. */
+const nextRelease = {
+  package: "chuggy-darwin",
+  version: "9.8.8",
+  url: `${runnerReleasePrefix}v9.8.8/chuggy-darwin-9.8.8.tgz`,
+  integrity: `sha512-${"A".repeat(86)}==`,
+};
+
+/**
+ * A client whose plane answers each poll as `polled` says, holding nothing.
+ *
+ * @param {() => unknown} polled
+ */
+function polledClient(polled) {
+  return /** @type {any} */ ({
+    tokens: {
+      acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+      invalidate: () => undefined,
+    },
+    plane: { poll: async () => polled() },
+    backend: { held: async () => [], ended: async () => [] },
+    settings: { concurrencyMax: 2, outageBackoffMs: 5000, passesMax: 1 },
+  });
+}
+
+/** The update of a copy at 9.8.7 that installs whatever release it is given. */
+const installingUpdates = {
+  on: true,
+  updater: /** @type {any} */ ({
+    runner: { package: "chuggy-darwin", version: "9.8.7" },
+    refusal: async () => undefined,
+    update: async (/** @type {{version: string}} */ release) => ({
+      updated: "Installed",
+      version: release.version,
+    }),
+  }),
+};
+
+/**
+ * Catches a denied run restarted by its agent, or an updated one left
+ * stopped, or one started by hand told nothing of the release it installed.
+ */
+test("a run the plane denies is done, and one that installed a release of itself ends with the status its agent restarts after, and started by hand says to start it again", async () => {
+  /** @type {string[]} */
+  const denials = [];
+  assert.equal(
+    await runnerLoop(
+      polledClient(() => ({
+        polled: "Denied",
+        evidence: "the pool was revoked",
+      })),
+      {
+        sleep: async () => undefined,
+        log: (line) => denials.push(line),
+        updates: installingUpdates,
+        underAgent: true,
+      },
+    ),
+    0,
+  );
+  assert.deepEqual(denials, [
+    "the plane denied this pool: the pool was revoked",
+  ]);
+  for (const [underAgent, said] of /** @type {const} */ ([
+    [true, "ending, for launchd to restart this run on chuggy-darwin 9.8.8"],
+    [false, "ending: start this run again to run chuggy-darwin 9.8.8"],
+  ])) {
+    /** @type {string[]} */
+    const log = [];
+    const status = await runnerLoop(
+      polledClient(() => ({
+        polled: "Reconciled",
+        assignments: [],
+        sessions: [],
+        stop: [],
+        release: nextRelease,
+      })),
+      {
+        sleep: async () => undefined,
+        log: (line) => log.push(line),
+        updates: installingUpdates,
+        underAgent,
+      },
+    );
+    assert.equal(status, updatedExitStatus);
+    assert.notEqual(updatedExitStatus, 0);
+    assert.equal(log.at(-1), said);
+  }
+});
+
+/**
+ * Catches a run updating from another package's downloads, into another
+ * directory than its own copy's, or where the runner's file turns it off.
+ */
+test("a run updates itself as the runner's file says, from this package's own release downloads into the directory its copy is installed in", async (t) => {
+  const { home, poolFile } = await runnerFixture(t);
+  const copy = {
+    package: "chuggy-darwin",
+    version: "9.8.7",
+    cli: "/opt/chuggy-darwin/cli.mjs",
+  };
+  const updates = runnerUpdates(await runnerSetup(poolFile, home), copy);
+  assert.equal(updates.on, true);
+  assert.deepEqual(updates.updater.runner, {
+    package: "chuggy-darwin",
+    version: "9.8.7",
+  });
+  assert.equal(
+    await updates.updater.refusal(nextRelease),
+    "this runner is installed at /opt/chuggy-darwin, which is not where npm installs a package globally",
+  );
+  const elsewhere =
+    "https://github.com/kasofsk/chuggy-linux/releases/download/v9.8.8/chuggy-darwin-9.8.8.tgz";
+  assert.equal(
+    await updates.updater.refusal({ ...nextRelease, url: elsewhere }),
+    `its address, ${elsewhere}, is not a release download under ${runnerReleasePrefix}`,
+  );
+  const off = await runnerFixture(t, { runner: { autoUpdate: false } });
+  assert.equal(
+    runnerUpdates(await runnerSetup(off.poolFile, off.home), copy).on,
+    false,
+  );
 });

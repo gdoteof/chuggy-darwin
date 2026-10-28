@@ -10,7 +10,8 @@
  * with `--host` declares the Mac's platform too, and its pool file says so, and
  * a job that pins no image and names it runs on the Mac itself, sized against
  * the Mac. Each poll advertises what the runner finds of the VM and its file
- * when the run starts.
+ * when the run starts, and names this copy, so that the plane can name the
+ * release chuggy pins, which a run installs and ends to be restarted on.
  *
  * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
  * the runner's file names `claudeTokenFile`. The core withholds what would
@@ -22,7 +23,7 @@ import { Buffer } from "node:buffer";
 import { readdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
@@ -48,13 +49,16 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   poolRunnerClient,
+  poolRunnerLoop,
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
 import { registerAdvertised } from "@chuggy/worker-core/register.mjs";
+import { runnerUpdater } from "@chuggy/worker-core/runnerUpdate.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { colimaCli, colimaProfile, colimaRosetta } from "./colimaVm.mjs";
 import { diskFloorBytes, vmDiskFree } from "./diskFree.mjs";
+import { updatedExitStatus } from "./launchAgent.mjs";
 import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
 import {
@@ -74,6 +78,14 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerPaths.mjs").RunnerPaths} RunnerPaths
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts} RunnerUpdatePorts
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
+ *
+ * @typedef {object} RunnerCopy the copy of this runner that is running
+ * @property {string} package its package's name, as its `package.json` names it
+ * @property {string} version as its `package.json` names it
+ * @property {string} cli its entry, as an absolute path, at the root of the directory it is installed in
  *
  * @typedef {object} RunnerSetup
  * @property {string} poolFile
@@ -89,6 +101,10 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client whose backend keeps the Mac awake while the pool holds work
  */
+
+/** Where this package's releases are downloaded from, and the one place a release chuggy names is taken from. */
+export const runnerReleasePrefix =
+  "https://github.com/kasofsk/chuggy-darwin/releases/download/";
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
 const pullRetryMs = 5_000;
@@ -159,6 +175,63 @@ export function runnerMemoryLock(paths) {
  */
 export function runnerClaimLock(paths) {
   return join(paths.runtime, "memory", "docker.claim");
+}
+
+/**
+ * The lock a service takes to install a release of the runner: one for every
+ * pool's agent of this user, which all run the one install.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerUpdateLock(paths) {
+  return join(paths.runtime, "update.lock");
+}
+
+/**
+ * What a run is told of its runner's update of itself: on unless the
+ * runner's file turns it off, and taken from this package's own release
+ * downloads into the directory this copy is installed in.
+ *
+ * @param {Pick<RunnerSetup, "config" | "paths">} setup
+ * @param {RunnerCopy} copy
+ * @param {Partial<RunnerUpdatePorts>} [ports] where a suite stands in for the network, npm or the machine
+ * @returns {WorkerPoolUpdates}
+ */
+export function runnerUpdates(setup, copy, ports) {
+  return {
+    on: setup.config.autoUpdate,
+    updater: runnerUpdater(
+      {
+        runner: { package: copy.package, version: copy.version },
+        releasePrefix: runnerReleasePrefix,
+        installed: dirname(copy.cli),
+        lockPath: runnerUpdateLock(setup.paths),
+      },
+      ports,
+    ),
+  };
+}
+
+/**
+ * The pool loop until the plane denies the pool, which is done, or until the
+ * runner has installed a release of itself, which its agent restarts it on
+ * and a run started by hand is started again on.
+ *
+ * @param {WorkerPoolClient} client
+ * @param {{sleep: (ms: number) => Promise<void>, log: (line: string) => void, updates: WorkerPoolUpdates, underAgent: boolean}} seams `underAgent` where launchd started the run as the pool's agent
+ * @returns {Promise<number>} the exit status
+ */
+export async function runnerLoop(client, seams) {
+  const { underAgent, ...loop } = seams;
+  const pass = await poolRunnerLoop(client, loop);
+  if (pass.passed === "Denied") return 0;
+  const release = `${seams.updates.updater.runner.package} ${pass.version}`;
+  seams.log(
+    underAgent
+      ? `ending, for launchd to restart this run on ${release}`
+      : `ending: start this run again to run ${release}`,
+  );
+  return updatedExitStatus;
 }
 
 export function runnerEngine() {
@@ -344,7 +417,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn, polls?: boolean}} host this process's uid and home, where its log lines go, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, what starts a job on the Mac itself when not Node's own `spawn`, and `polls: false` for a command that never polls, which then finds nothing to advertise
+ * @param {{uid: number, home: string, log: (line: string) => void, runner?: RunnerIdentity, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn, polls?: boolean}} host this process's uid and home, where its log lines go, the copy each poll names, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, what starts a job on the Mac itself when not Node's own `spawn`, and `polls: false` for a command that never polls, which then finds nothing to advertise
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -409,7 +482,7 @@ export async function runnerParts(setup, host) {
     credentials,
     poweredBackend(backend, power),
     runnerPoolLimits(config, setup.poolFile),
-    { tokens, fetch: host.fetch, capabilities },
+    { tokens, fetch: host.fetch, runner: host.runner, capabilities },
   );
   return { runtime, socket, engine, colima, backend, client };
 }

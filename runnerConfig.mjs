@@ -175,6 +175,8 @@ export const runnerConfigSchema = z
      * whole budget. None is reserved where it is 0.
      */
     memoryReservedGib: nonnegativeSchema.max(freeGibMax).default(0),
+    /** Whether a run installs the release chuggy names, or only says it is out. */
+    autoUpdate: z.boolean().default(true),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

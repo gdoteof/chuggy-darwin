@@ -3,10 +3,18 @@
  * pools serve from one Mac. It is named for the pool file, as
  * `chuggy-darwin.<base>` in `chuggy-darwin.<base>.plist`, and restarts the
  * runner after any exit but 0: a run exits 0 only when the plane denied the
- * pool, and no restart of it would be answered differently.
+ * pool, and no restart of it would be answered differently. A run that
+ * installed a release of itself exits `updatedExitStatus`, and is restarted
+ * on that release.
  */
 
 import { basename } from "node:path";
+
+/**
+ * The exit status of a run that installed a release of itself, to be started
+ * again on it: sysexits' `EX_TEMPFAIL`.
+ */
+export const updatedExitStatus = 75;
 
 /** What every agent's label of this runner begins with. */
 const launchAgentPrefix = "chuggy-darwin.";
@@ -51,6 +59,21 @@ export function launchAgentLabel(poolFile) {
 /** @param {string} label */
 export function launchAgentFileName(label) {
   return `${label}${launchAgentSuffix}`;
+}
+
+/**
+ * Whether launchd started this process as the agent serving `poolFile`: it
+ * names each job it starts by its label in `XPC_SERVICE_NAME`.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @param {string} poolFile
+ */
+export function launchAgentRunning(environment, poolFile) {
+  try {
+    return environment.XPC_SERVICE_NAME === launchAgentLabel(poolFile);
+  } catch {
+    return false;
+  }
 }
 
 /** @param {string} text */

@@ -12,7 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+
+import { workerRunnerHeader } from "@chuggy/worker-contract/workerPool";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
 
@@ -24,7 +29,8 @@ import {
   registeredFixture,
   registeredPersonalFixture,
 } from "./register.fixture.mjs";
-import { poolRuntimeDirectory } from "./runner.mjs";
+import { launchAgentLabel, updatedExitStatus } from "./launchAgent.mjs";
+import { poolRuntimeDirectory, runnerReleasePrefix } from "./runner.mjs";
 import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -38,7 +44,13 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {typeof globalThis.fetch} [fetch]
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  * @property {import("./colimaVm.mjs").ColimaCli} [colima]
+ * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] where not one whose issuer has revoked the pool
+ * @property {Partial<import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts>} [updatePorts]
+ * @property {string} [cli] the copy's entry, where not one installed outside npm's global directory
  */
+
+/** The version the suite's copy says it is. */
+const copyVersion = "9.8.7";
 
 /**
  * Docker with a VM of the given architecture.
@@ -82,8 +94,13 @@ async function called(argv, machine = {}) {
       }),
     engine: machine.engine ?? vm(machine.architecture ?? "aarch64"),
     colima: machine.colima ?? fakeColima(90).colima,
-    tokens: deniedTokens,
-    cli: "/opt/chuggy-darwin/cli.mjs",
+    tokens: machine.tokens ?? deniedTokens,
+    packageName: "chuggy-darwin",
+    version: copyVersion,
+    node: "/opt/homebrew/bin/node",
+    nodeVersion: "24.0.0",
+    cli: machine.cli ?? "/opt/chuggy-darwin/cli.mjs",
+    updatePorts: machine.updatePorts,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
@@ -229,6 +246,15 @@ test("register --personal redeems a member's personal token for their runner's f
   assert.deepEqual(
     JSON.parse(await readFile(file, "utf8")),
     registeredPersonal,
+  );
+});
+
+test("doctor's first line names the copy speaking and the Node it runs under", async (t) => {
+  const { home, poolFile } = await runnerFixture(t);
+  const { out } = await called(["doctor", "--pool", poolFile], { home });
+  assert.equal(
+    out.split("\n")[0],
+    `chuggy-darwin ${copyVersion} at /opt/chuggy-darwin/cli.mjs, under Node 24.0.0 at /opt/homebrew/bin/node`,
   );
 });
 
@@ -744,6 +770,184 @@ test("status names the limits this pool's entry in pools sets its service", asyn
     "service: not running",
     "limits: concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.shame sets them",
   ]);
+});
+
+/**
+ * Catches a run that names no copy, or another, on its polls, or one that
+ * ignores the release a poll names, or takes it where the runner's file
+ * turns updates off.
+ */
+test("a run names its copy on each poll, and takes the release chuggy names unless the runner's file turns updates off", async (t) => {
+  const release = {
+    package: "chuggy-darwin",
+    version: "9.8.8",
+    url: "https://github.com/kasofsk/chuggy-darwin/releases/download/v9.8.8/chuggy-darwin-9.8.8.tgz",
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+  /** @type {(string | null)[]} */
+  const named = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ url, /** @type {RequestInit} */ init) => {
+      if (String(url) !== release.url)
+        named.push(
+          new globalThis.Headers(init.headers).get(workerRunnerHeader),
+        );
+      return globalThis.Response.json({
+        assignments: [],
+        sessions: [],
+        stop: [],
+        release,
+      });
+    },
+  );
+  for (const [runner, said] of [
+    [
+      {},
+      "did not update to chuggy-darwin 9.8.8: this runner is installed at /opt/chuggy-darwin, which is not where npm installs a package globally",
+    ],
+    [
+      { autoUpdate: false },
+      "chuggy-darwin 9.8.8 is out, and this runner, 9.8.7, does not update itself",
+    ],
+  ]) {
+    const { home, poolFile } = await runnerFixture(t, { runner });
+    let acquired = 0;
+    const { status, out } = await called(["run", "--pool", poolFile], {
+      home,
+      tokens: {
+        acquire: async () =>
+          (acquired += 1) <= 2
+            ? { acquired: "Token", token: "pool-token" }
+            : deniedTokens.acquire(),
+        invalidate: () => undefined,
+      },
+    });
+    assert.equal(status, 0, out);
+    assert.ok(
+      out.split("\n").some((line) => line.startsWith(said)),
+      out,
+    );
+  }
+  assert.ok(named.length > 0);
+  assert.deepEqual(new Set(named), new Set(["chuggy-darwin/9.8.7"]));
+});
+
+/**
+ * A copy at `copyVersion` installed where `npm install --global` puts one,
+ * and what an update of it reaches, under which a release installs: its
+ * download is the bytes its integrity names, `tar` unpacks a manifest naming
+ * it, its bin answers its version, and npm writes that version over the
+ * installed copy's.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+async function installingCopy(t) {
+  const prefix = await mkdtemp(join(tmpdir(), "chuggy-darwin-prefix-"));
+  t.after(() => rm(prefix, { recursive: true, force: true }));
+  const installed = join(prefix, "lib", "node_modules", "chuggy-darwin");
+  await mkdir(join(prefix, "bin"), { recursive: true });
+  /** @param {string} version */
+  const manifest = (version) =>
+    JSON.stringify({
+      name: "chuggy-darwin",
+      version,
+      bin: { "chuggy-darwin": "cli.mjs" },
+    });
+  await mkdir(installed, { recursive: true });
+  await writeFile(join(installed, "package.json"), manifest(copyVersion));
+  const bytes = Buffer.from("chuggy-darwin 9.8.8 tarball");
+  const release = {
+    package: "chuggy-darwin",
+    version: "9.8.8",
+    url: `${runnerReleasePrefix}v9.8.8/chuggy-darwin-9.8.8.tgz`,
+    integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+  };
+  /** @type {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdateRun} */
+  const run = async (file, args) => {
+    if (file === "tar") {
+      const root = join(args[3], "package");
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, "package.json"), manifest(release.version));
+    } else if (file === "npm")
+      await writeFile(
+        join(installed, "package.json"),
+        manifest(release.version),
+      );
+    return {
+      code: 0,
+      stdout: file === "/node" ? `chuggy-darwin ${release.version}\n` : "",
+      stderr: "",
+    };
+  };
+  return {
+    cli: join(installed, "cli.mjs"),
+    release,
+    ports: {
+      fetch: async () => new globalThis.Response(bytes),
+      run,
+      execPath: "/node",
+      executable: async () => false,
+      temporary: prefix,
+    },
+  };
+}
+
+/** The passes a run that installs a release may make before its pool is denied, which ends one that never installs it. */
+const passesMax = 500;
+
+/**
+ * Catches a run that installed a release ending as a denied one does, which
+ * its agent would not restart, or one launchd started told to be started by
+ * hand, or one started by hand told launchd restarts it.
+ */
+test("a run that installs the release chuggy names ends with the status its agent restarts after, saying who starts it again", async (t) => {
+  for (const [agent, said] of [
+    [true, "ending, for launchd to restart this run on chuggy-darwin 9.8.8"],
+    [false, "ending: start this run again to run chuggy-darwin 9.8.8"],
+  ]) {
+    const { cli, release, ports } = await installingCopy(t);
+    t.mock.method(globalThis, "fetch", async () => {
+      await delay(10);
+      return globalThis.Response.json({
+        assignments: [],
+        sessions: [],
+        stop: [],
+        release,
+      });
+    });
+    const { home, poolFile } = await runnerFixture(t);
+    let acquired = 0;
+    const { status, out } = await called(["run", "--pool", poolFile], {
+      home,
+      cli,
+      updatePorts: ports,
+      environment: agent
+        ? { XPC_SERVICE_NAME: launchAgentLabel(poolFile) }
+        : {},
+      tokens: {
+        acquire: async () =>
+          (acquired += 1) <= passesMax
+            ? { acquired: "Token", token: "pool-token" }
+            : deniedTokens.acquire(),
+        invalidate: () => undefined,
+      },
+    });
+    assert.equal(status, updatedExitStatus, out);
+    assert.equal(out.split("\n").at(-1), said);
+    t.mock.restoreAll();
+  }
+});
+
+test("--version names this copy, whatever else is asked, and usage names it", async () => {
+  for (const argv of [["--version"], ["doctor", "--version"]]) {
+    const { status, out, err } = await called(argv);
+    assert.equal(status, 0, argv.join(" "));
+    assert.equal(out, `chuggy-darwin ${copyVersion}`);
+    assert.equal(err, "");
+  }
+  assert.match((await called(["help"])).out, /^ {7}chuggy-darwin --version$/mu);
 });
 
 test("a second run of a pool is refused before it removes anything of the first's", async (t) => {

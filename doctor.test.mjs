@@ -13,7 +13,7 @@ import {
   launchAgentLabel,
   launchAgentPlist,
 } from "./launchAgent.mjs";
-import { vmPlatform } from "./runner.mjs";
+import { runnerUpdates, vmPlatform } from "./runner.mjs";
 import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
@@ -24,7 +24,19 @@ const ownUid = process.getuid?.() ?? -1;
  * @typedef {object} DoctorSeen what doctor is run with besides the files
  * @property {string} [path] its own PATH
  * @property {Record<string, string>} [agentVersions] what each `claude` says its version is
+ * @property {string} [installed] the directory the copy is installed in, where not Homebrew's global one
+ * @property {(path: string) => Promise<boolean>} [writable] whether an update could write a path, where not every one
  */
+
+/** Homebrew's npm prefix, under which a global install puts this package. */
+const homebrewPrefix = "/opt/homebrew";
+
+/** The copy doctor is run as, installed where `npm install --global` puts it. */
+const copy = {
+  package: "chuggy-darwin",
+  version: "9.8.7",
+  cli: join(homebrewPrefix, "lib", "node_modules", "chuggy-darwin", "cli.mjs"),
+};
 
 /**
  * @param {import("node:test").TestContext} t
@@ -55,6 +67,18 @@ async function doctored(
     path: seen.path,
     agentVersion: async (file) => seen.agentVersions?.[file],
     parts: {
+      updates: (config) =>
+        runnerUpdates(
+          { config, paths },
+          {
+            ...copy,
+            cli:
+              seen.installed === undefined
+                ? copy.cli
+                : join(seen.installed, "cli.mjs"),
+          },
+          { writable: seen.writable ?? (async () => true) },
+        ),
       engine: () => engine,
       colima: () =>
         fakeColima(vm.diskGib ?? 90, { rosetta: vm.rosetta ?? "enabled" })
@@ -87,6 +111,7 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    control socket",
       "ok    Claude credential",
       "warn  launchd agent",
+      "ok    updates",
       "ok    docker",
       "ok    capabilities",
       "ok    job network",
@@ -817,5 +842,61 @@ test("on a pool registered with --host, the Codex credential check names the cod
   assert.equal(
     none.line,
     `warn  Codex credential: the Codex auth file ${none.authFile}, this runner's own; no codex is on doctor's own PATH, ${empty}, so a job on the Mac itself runs no Codex`,
+  );
+});
+
+/**
+ * Catches updates said to be on where the runner's file turns them off, or
+ * the reverse.
+ */
+test("doctor says the runner updates itself unless its file turns that off", async (t) => {
+  /** @param {string[]} lines */
+  const updates = (lines) => lines.find((line) => line.includes(" updates: "));
+  assert.equal(
+    updates(await doctored(t)),
+    "ok    updates: on: a run installs the release chuggy names",
+  );
+  assert.equal(
+    updates(
+      await doctored(t, {}, { runner: { autoUpdate: false } }, async () => ({
+        writable: async () => false,
+      })),
+    ),
+    "ok    updates: off: the runner's file sets autoUpdate to false",
+  );
+});
+
+/**
+ * Catches an install that could not take a release passing unwarned, or
+ * failing doctor, or the update asked of other directories than npm's.
+ */
+test("an install that could not update itself is warned of with why, and passes", async (t) => {
+  const remedy =
+    "install it with npm under a prefix you own, such as Homebrew's";
+  /** @param {string[]} lines */
+  const updates = (lines) => lines.find((line) => line.includes(" updates: "));
+  assert.equal(
+    updates(
+      await doctored(t, {}, {}, async () => ({
+        installed: "/opt/chuggy-darwin",
+      })),
+    ),
+    `warn  updates: on, but this install cannot take a release: this runner is installed at /opt/chuggy-darwin, which is not where npm installs a package globally; ${remedy}`,
+  );
+  /** @type {string[]} */
+  const asked = [];
+  const unwritable = await doctored(t, {}, {}, async () => ({
+    writable: async (path) => {
+      asked.push(path);
+      return !path.endsWith("bin");
+    },
+  }));
+  assert.deepEqual(asked, [
+    join(homebrewPrefix, "lib", "node_modules"),
+    join(homebrewPrefix, "bin"),
+  ]);
+  assert.equal(
+    updates(unwritable),
+    `warn  updates: on, but this install cannot take a release: this runner cannot write ${join(homebrewPrefix, "bin")}, where npm would install it; ${remedy}`,
   );
 });
