@@ -137,9 +137,15 @@ export const runnerConfigSchema = z
     pools: z.record(z.string(), poolLimitsSchema).default({}),
     /**
      * How long a job's image this runner pulled may go unused before it is
-     * removed, 0 keeping them.
+     * removed, 0 keeping them until the disk is under `diskFreeGibMin`.
      */
     imageUnusedSecsMax: nonnegativeSchema.default(imageUnusedSecsMaxDefault),
+    /**
+     * The GiB docker's storage in Colima's VM keeps free: under it the agent
+     * removes the images it may and takes no job, and under half of it stops
+     * one. None is kept where it is 0.
+     */
+    diskFreeGibMin: nonnegativeSchema.max(freeGibMax).default(20),
     /**
      * The GiB of the VM's memory its containers leave free, a reserve for
      * what the VM and docker use outside every container. The rest is the

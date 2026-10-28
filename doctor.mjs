@@ -38,6 +38,7 @@ import {
   poolLabelValue,
 } from "@chuggy/worker-core/poolIdentity.mjs";
 
+import { diskFloorSaid } from "./diskFree.mjs";
 import {
   launchAgentFileName,
   launchAgentLabel,
@@ -70,6 +71,7 @@ import {
  *
  * @typedef {object} DoctorParts what a run would reach, built from what was read
  * @property {() => Engine} engine
+ * @property {() => import("./colimaVm.mjs").ColimaCli} colima
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["tokens"]} tokens
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["plane"]} plane
  *
@@ -284,6 +286,17 @@ async function engineChecks(input, credentials, config, findings) {
       return [true, `${config.network} is missing, and a run makes it`];
     throw new Error(engineFailureLine(inspected));
   });
+  const disk = await diskFloorSaid(config, engine, input.parts.colima());
+  findings.push(
+    disk.warning
+      ? {
+          check: "disk floor",
+          passed: true,
+          warning: true,
+          detail: disk.detail,
+        }
+      : { check: "disk floor", passed: true, detail: disk.detail },
+  );
 }
 
 /**

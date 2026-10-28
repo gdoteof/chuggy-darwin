@@ -51,6 +51,8 @@ import {
 } from "@chuggy/worker-core/poolRunner.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
+import { colimaCli } from "./colimaVm.mjs";
+import { diskFloorBytes, vmDiskFree } from "./diskFree.mjs";
 import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
 import {
@@ -80,6 +82,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} runtime the pool's runtime directory
  * @property {string} socket where the pool's service listens
  * @property {Engine} engine
+ * @property {import("./colimaVm.mjs").ColimaCli} colima what reaches docker's VM, which its free disk is measured in
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client whose backend keeps the Mac awake while the pool holds work
  */
@@ -272,7 +275,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn}} host this process's uid and home, where its log lines go, the engine and token source when not docker and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, and what starts a job on the Mac itself when not Node's own `spawn`
+ * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn}} host this process's uid and home, where its log lines go, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, and what starts a job on the Mac itself when not Node's own `spawn`
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -280,6 +283,7 @@ export async function runnerParts(setup, host) {
   const runtime = poolRuntimeDirectory(paths, credentials);
   const socket = poolSocket(runtime);
   const engine = host.engine ?? runnerEngine();
+  const colima = host.colima ?? colimaCli();
   const dockerHost = await dockerEndpoint(engine);
   const { size } = await dockerMachine(engine);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
@@ -311,6 +315,7 @@ export async function runnerParts(setup, host) {
       memoryReservedBytes: memoryReservedBytes(config),
       memoryLock: runnerMemoryLock(paths),
       memoryClaimLock: runnerClaimLock(paths),
+      diskFreeBytesMin: diskFloorBytes(config),
     },
     {
       engine,
@@ -319,6 +324,7 @@ export async function runnerParts(setup, host) {
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
       tokenFileRefusal,
+      diskFree: () => vmDiskFree(engine, colima),
     },
   );
   const backend = runnerHostRouted(setup, container, claude, {
@@ -333,7 +339,7 @@ export async function runnerParts(setup, host) {
     runnerPoolLimits(config, setup.poolFile),
     { tokens, fetch: host.fetch },
   );
-  return { runtime, socket, engine, backend, client };
+  return { runtime, socket, engine, colima, backend, client };
 }
 
 /**

@@ -7,7 +7,7 @@ import test from "node:test";
 import { registerRequest } from "@chuggy/worker-core/register.mjs";
 
 import { doctorFindings, findingLine } from "./doctor.mjs";
-import { fakeEngine } from "./engine.fixture.mjs";
+import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
 import {
   launchAgentFileName,
   launchAgentLabel,
@@ -28,7 +28,7 @@ const ownUid = process.getuid?.() ?? -1;
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{architecture?: string}} [vm]
+ * @param {{architecture?: string, name?: string, diskGib?: number}} [vm] its architecture, the name docker gives it and the GiB free on its disk, when not Colima's default VM on arm64 with 90 GiB free
  * @param {Parameters<typeof runnerFixture>[1]} [documents]
  * @param {(fixture: MacFixture) => Promise<DoctorSeen>} [prepared] what a suite makes of the Mac's files before doctor reads them
  */
@@ -46,6 +46,7 @@ async function doctored(
     ...state.machine,
     architecture: vm.architecture ?? "aarch64",
   };
+  state.info = { ...state.info, Name: vm.name ?? "colima" };
   const findings = await doctorFindings({
     poolFile,
     paths,
@@ -55,6 +56,7 @@ async function doctored(
     claudeVersion: async (file) => seen.claudeVersions?.[file],
     parts: {
       engine: () => engine,
+      colima: () => fakeColima(vm.diskGib ?? 90).colima,
       tokens: () => ({
         acquire: async () => ({ acquired: "Token", token: "pool-token" }),
         invalidate: () => undefined,
@@ -86,6 +88,7 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    docker",
       "ok    platform",
       "ok    job network",
+      "ok    disk floor",
       "ok    pool token",
       "ok    plane",
     ],
@@ -138,6 +141,26 @@ test("doctor names the limits a pool's entry in pools sets its service, and warn
       "pools.vteng.chuggy.leed names no pool file in pools, so it limits no service",
       "pools.vteng.chuggy.lead.json names no pool file in pools, so it limits no service",
     ],
+  );
+});
+
+test("doctor warns of a disk in Colima's VM under the runner's floor, or one it cannot measure, and passes one over it", async (t) => {
+  /** @param {string[]} lines */
+  const floor = (lines) => lines.find((line) => line.includes("disk floor"));
+  const where = "/var/lib/docker in Colima's VM";
+  assert.equal(
+    floor(
+      await doctored(t, { diskGib: 30 }, { runner: { diskFreeGibMin: 50 } }),
+    ),
+    `warn  disk floor: 30 GiB free at ${where}, under the floor of 50 GiB: the agent removes the images it may and takes no job until it is over`,
+  );
+  assert.equal(
+    floor(await doctored(t, { name: "docker-desktop" })),
+    "warn  disk floor: none held, since the free disk could not be measured: docker names its machine docker-desktop, which is no Colima VM, so its disk cannot be measured",
+  );
+  assert.equal(
+    floor(await doctored(t, { diskGib: 20 })),
+    `ok    disk floor: 20 GiB free at ${where}, over the floor of 20 GiB`,
   );
 });
 

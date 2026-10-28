@@ -18,7 +18,7 @@ import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
 
 import { cliMain } from "./commands.mjs";
 import { controlServed, inFlightFixture } from "./control.fixture.mjs";
-import { fakeEngine } from "./engine.fixture.mjs";
+import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
 import {
   answeringFetch,
   registeredFixture,
@@ -36,6 +36,7 @@ import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
  * @property {string} [arch] the Mac's own, as `process.arch` names it
  * @property {typeof globalThis.fetch} [fetch]
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
+ * @property {import("./colimaVm.mjs").ColimaCli} [colima]
  */
 
 /**
@@ -79,6 +80,7 @@ async function called(argv, machine = {}) {
         throw new Error("a suite reaches no network");
       }),
     engine: machine.engine ?? vm(machine.architecture ?? "aarch64"),
+    colima: machine.colima ?? fakeColima(90).colima,
     tokens: deniedTokens,
     cli: "/opt/chuggy-darwin/cli.mjs",
     out: (line) => out.push(line),
@@ -573,6 +575,7 @@ test("status and stop reach this pool's service, and status names each workload'
     [
       "service: running",
       "limits: concurrencyMax 3, sessionsMax 4",
+      "disk floor: 90 GiB free at /var/lib/docker in Colima's VM, over the floor of 20 GiB",
       "memory: 2 GiB room · 2 GiB budget · 2 GiB ceiling · 0 GiB sessions · Taking",
       `${inFlightFixture.name}  session  pulling  i  asg-1`,
       "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
@@ -625,7 +628,7 @@ test("status names a job held for room and what it waits for, and the memory of 
     home,
     engine,
   });
-  assert.deepEqual(status.out.split("\n").slice(2), [
+  assert.deepEqual(status.out.split("\n").slice(3), [
     "memory: 2 GiB room · 8 GiB budget · 8 GiB ceiling · 0 GiB sessions · Held",
     `${inFlightFixture.name}  job  held  i  asg-1  waiting: needs 4 GiB, room 2 GiB`,
   ]);

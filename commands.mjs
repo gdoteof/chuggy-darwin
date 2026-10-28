@@ -30,6 +30,8 @@ import {
   registerRequest,
 } from "@chuggy/worker-core/register.mjs";
 
+import { colimaCli } from "./colimaVm.mjs";
+import { diskFloorSaid } from "./diskFree.mjs";
 import { claudeVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { mcpServed } from "./mcp.mjs";
@@ -66,6 +68,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} arch this Mac's own, as `process.arch` names it
  * @property {typeof globalThis.fetch} fetch
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run uses and registration asks, when not docker
+ * @property {import("./colimaVm.mjs").ColimaCli} [colima] what reaches docker's VM, when not colima
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
@@ -108,6 +111,7 @@ async function started(call) {
     home: call.host.home,
     log: call.host.out,
     engine: call.host.engine,
+    colima: call.host.colima,
     tokens: call.host.tokens,
     fetch: call.host.fetch,
   });
@@ -175,6 +179,8 @@ async function status(call) {
     answered === undefined ? "service: not running" : "service: running",
   );
   call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
+  const disk = await diskFloorSaid(setup.config, runner.engine, runner.colima);
+  call.host.out(`disk floor: ${disk.detail}`);
   call.host.out(
     `memory: ${await memoryBudgetSaid(setup.config, runner.engine)}`,
   );
@@ -221,6 +227,7 @@ async function doctor(call) {
     claudeVersion: claudeVersionAsked,
     parts: {
       engine: () => call.host.engine ?? runnerEngine(),
+      colima: () => call.host.colima ?? colimaCli(),
       tokens: (credentials) =>
         call.host.tokens ?? poolRunnerTokens(credentials),
       plane: poolRunnerPlane,

@@ -106,6 +106,18 @@ function fakeEngineState() {
     /** The VM docker runs containers in, as `info` reports it: Colima's default. */
     machine: { cpus: 2, memoryBytes: 2 * 1024 ** 3, architecture: "aarch64" },
     /**
+     * What all of `info` says of the VM beside its size and architecture:
+     * the name docker gives it and where docker stores what it holds, as
+     * docker in Colima's default VM says them.
+     *
+     * @type {Record<string, unknown>}
+     */
+    info: {
+      Name: "colima",
+      DockerRootDir: "/var/lib/docker",
+      DriverStatus: [["driver-type", "io.containerd.snapshotter.v1"]],
+    },
+    /**
      * The endpoint docker's current context names, or none when its context
      * cannot be read.
      *
@@ -355,14 +367,13 @@ function statsPrinted(state) {
 }
 
 /**
- * All `info` says of the VM, as docker in Colima's names it.
+ * All `info` says of the VM.
  *
  * @param {FakeEngineState} state
  */
 function infoPrinted(state) {
   return `${JSON.stringify({
-    Name: "colima",
-    DockerRootDir: "/var/lib/docker",
+    ...state.info,
     MemTotal: state.machine.memoryBytes,
     NCPU: state.machine.cpus,
     Architecture: state.machine.architecture,
@@ -459,4 +470,45 @@ export function deferred() {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+/**
+ * Colima's CLI, answering a command in its default VM as that VM would: `df
+ * -P -k` with `gib` GiB free under every path but those `paths` sets, in 1
+ * KiB blocks. It records each path it measures.
+ *
+ * @param {number} gib
+ * @param {Record<string, number>} [paths]
+ */
+export function fakeColima(gib, paths = {}) {
+  /** @type {string[]} */
+  const measured = [];
+  /** @type {string[][]} */
+  const calls = [];
+  /** @type {import("./colimaVm.mjs").ColimaCli} */
+  const colima = {
+    exec: async (argv) => {
+      calls.push([...argv]);
+      const [ssh, flag, profile, separator, command, ...rest] = argv;
+      if (ssh !== "ssh" || flag !== "--profile" || separator !== "--")
+        return failed(`unknown command: ${argv.join(" ")}`);
+      if (profile !== "default")
+        return failed(
+          `time="2026-10-27T22:38:17-04:00" level=fatal msg="colima [profile=${profile}] not running"`,
+        );
+      if (command !== "df" || rest[0] !== "-P" || rest[1] !== "-k")
+        return failed(`unknown command: ${argv.join(" ")}`);
+      const rows = rest.slice(2).map((path) => {
+        measured.push(path);
+        const blocks = Math.floor((paths[path] ?? gib) * 2 ** 20);
+        return `/dev/vdb1 102624184 694312 ${String(blocks)} 1% ${path}`;
+      });
+      return answered(
+        ["Filesystem 1024-blocks Used Available Capacity Mounted on", ...rows]
+          .map((row) => `${row}\n`)
+          .join(""),
+      );
+    },
+  };
+  return { colima, measured, calls };
 }

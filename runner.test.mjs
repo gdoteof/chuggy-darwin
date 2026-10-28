@@ -12,7 +12,7 @@ import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.m
 import { heldLabel } from "@chuggy/worker-core/engineArgv.mjs";
 import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
 
-import { fakeEngine } from "./engine.fixture.mjs";
+import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
 import {
   dockerEndpoint,
   dockerMachine,
@@ -259,6 +259,44 @@ function vmUsing(usedGib) {
   });
   return { engine, state };
 }
+
+test("a run holds the floor its file sets in GiB free where docker stores in Colima's VM, taking no job under it, and keeps none at 0", async (t) => {
+  const where = "/var/lib/docker in Colima's VM";
+  for (const [diskFreeGibMin, gib, taken] of /** @type {const} */ ([
+    [undefined, 19.9, false],
+    [undefined, 20, true],
+    [8, 7.5, false],
+    [0, 0.5, true],
+  ])) {
+    const label = `${String(diskFreeGibMin)} at ${String(gib)}`;
+    const { home, poolFile } = await runnerFixture(t, {
+      runner: diskFreeGibMin === undefined ? {} : { diskFreeGibMin },
+    });
+    const vm = fakeColima(gib);
+    /** @type {string[]} */
+    const logged = [];
+    const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      uid: ownUid,
+      home,
+      log: (line) => logged.push(line),
+      engine: fakeEngine().engine,
+      colima: vm.colima,
+      power: unpowered,
+    });
+    await runner.client.backend.held();
+    await runner.backend.settled();
+    assert.equal(runner.client.backend.jobsTaken?.(false), taken, label);
+    if (diskFreeGibMin === 0) assert.deepEqual(vm.measured, [], label);
+    else
+      assert.equal(
+        logged.includes(
+          `this runner's disk has ${String(gib)} GiB free at ${where}, under its floor of ${String(diskFreeGibMin ?? 20)} GiB: it takes no job until it is over`,
+        ),
+        !taken,
+        `${label}: ${logged.join("; ")}`,
+      );
+  }
+});
 
 test("every pool's agent of a user takes one memory lock and one claim lock, in the runner's runtime directory, since every one runs in the one VM", () => {
   const paths = runnerPaths("/Users/shame");
