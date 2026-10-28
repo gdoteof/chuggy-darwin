@@ -554,6 +554,7 @@ async function hostClaudeSaid(t, claude, seen) {
           poolFile: seen.agentPoolFile ?? fixture.poolFile,
           path: seen.agentPath,
           log: join(fixture.paths.logs, `${label}.log`),
+          background: false,
         }),
       );
     }

@@ -47,6 +47,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] where not one whose issuer has revoked the pool
  * @property {Partial<import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts>} [updatePorts]
  * @property {string} [cli] the copy's entry, where not one installed outside npm's global directory
+ * @property {boolean} [desktop] `false` where the user is not logged in at the Mac's screen
  */
 
 /** The version the suite's copy says it is. */
@@ -101,6 +102,7 @@ async function called(argv, machine = {}) {
     nodeVersion: "24.0.0",
     cli: machine.cli ?? "/opt/chuggy-darwin/cli.mjs",
     updatePorts: machine.updatePorts,
+    desktop: async () => machine.desktop ?? true,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
@@ -1016,6 +1018,7 @@ test("install-agent writes the pool file's own agent, which runs this CLI under 
     `<string>${join(paths.logs, `${label}.log`)}</string>`,
   ])
     assert.ok(text.includes(line), line);
+  assert.ok(!text.includes("LimitLoadToSessionType"));
   assert.equal((await stat(paths.logs)).mode & 0o777, 0o700);
   const again = await called(["install-agent", "--pool", poolFile], {
     home,
@@ -1107,6 +1110,54 @@ test("registering a pool its agent here runs says the agent stops until restarte
       `replaced ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
       `  launchctl kickstart -k gui/${String(process.getuid?.())}/chuggy-darwin.newtenant.arbbot.shame`,
     ].join("\n"),
+  );
+});
+
+/**
+ * Catches an agent written for a desktop session nobody is logged in to,
+ * which launchd refuses to load, or loaded into the background session but
+ * restarted in the desktop session's domain, which has no such agent.
+ */
+test("where nobody is logged in at the Mac's screen, install-agent writes the background session's agent and loads it into launchd's user domain, where registering again restarts it", async (t) => {
+  const machine = await home(t);
+  const { fetch } = answeringFetch(201, registered);
+  const PATH = await dockerPath(t);
+  assert.equal(
+    (await called(registerArgv, { home: machine, fetch })).status,
+    0,
+  );
+  const file = join(
+    machine,
+    ".config",
+    "chuggy",
+    "pools",
+    "newtenant.arbbot.shame.json",
+  );
+  const label = "chuggy-darwin.newtenant.arbbot.shame";
+  const plist = join(machine, "Library", "LaunchAgents", `${label}.plist`);
+  const uid = String(process.getuid?.());
+  const installed = await called(["install-agent", "--pool", file], {
+    home: machine,
+    environment: { PATH },
+    desktop: false,
+  });
+  assert.equal(installed.status, 0, installed.err);
+  assert.equal(
+    installed.out,
+    [
+      `wrote ${plist} for your background session, since you are not logged in at this Mac's screen; start it with:`,
+      `  launchctl bootout user/${uid}/${label} 2>/dev/null`,
+      `  launchctl bootstrap user/${uid} ${plist}`,
+    ].join("\n"),
+  );
+  assert.match(
+    await readFile(plist, "utf8"),
+    /<key>LimitLoadToSessionType<\/key>\s*<string>Background<\/string>/u,
+  );
+  const again = await called(registerArgv, { home: machine, fetch });
+  assert.equal(
+    again.out.split("\n")[1],
+    `  launchctl kickstart -k user/${uid}/${label}`,
   );
 });
 

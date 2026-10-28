@@ -38,8 +38,10 @@ import { agentVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
+  launchAgentBackground,
   launchAgentBaseCharsMax,
   launchAgentCommands,
+  launchAgentDesktop,
   launchAgentFileName,
   launchAgentLabel,
   launchAgentPlist,
@@ -80,6 +82,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {import("./colimaVm.mjs").ColimaCli} [colima] what reaches docker's VM, when not colima
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
  * @property {Partial<import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts>} [updatePorts] what an update reaches, where not the network, npm and this machine
+ * @property {(uid: number) => Promise<boolean>} [desktop] whether the user has a desktop session, where not as launchd says
  * @property {string} packageName this copy's package, as its `package.json` names it
  * @property {string} version this copy's, as its `package.json` names it
  * @property {string} node this process's Node
@@ -359,6 +362,9 @@ async function installAgent(call) {
     throw new Error(
       `${plist} serves ${served ?? "no pool file this runner named"}, not ${call.poolFile}; remove that agent if it is stale, or rename the pool file`,
     );
+  const background = !(await (call.host.desktop ?? launchAgentDesktop)(
+    call.host.uid,
+  ));
   await mkdir(paths.agents, { recursive: true });
   await mkdir(paths.logs, { recursive: true, mode: 0o700 });
   await writeFile(
@@ -370,13 +376,23 @@ async function installAgent(call) {
       poolFile: call.poolFile,
       path,
       log: join(paths.logs, `${label}.log`),
+      background,
     }),
   );
-  call.host.out(`wrote ${plist}; start it, and Colima at login, with:`);
-  for (const command of [
-    ...launchAgentCommands({ uid: call.host.uid, label, plist }),
-    "brew services start colima",
-  ])
+  const commands = launchAgentCommands({
+    uid: call.host.uid,
+    label,
+    plist,
+    background,
+  });
+  call.host.out(
+    background
+      ? `wrote ${plist} for your background session, since you are not logged in at this Mac's screen; start it with:`
+      : `wrote ${plist}; start it, and Colima at login, with:`,
+  );
+  for (const command of background
+    ? commands
+    : [...commands, "brew services start colima"])
     call.host.out(`  ${command}`);
   return 0;
 }
@@ -445,7 +461,9 @@ async function register(host, { capability, host: hosted, ...named }) {
         ? `${verb} ${file}; its agent runs the registration it read when it started until it is restarted:`
         : `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
     );
-    host.out(`  ${launchAgentRestart({ uid: host.uid, label })}`);
+    host.out(
+      `  ${launchAgentRestart({ uid: host.uid, label, background: launchAgentBackground(agent) })}`,
+    );
     return 0;
   }
   host.out(`${verb} ${file}; next:`);

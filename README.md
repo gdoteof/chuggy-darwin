@@ -126,6 +126,8 @@ chuggy-darwin install-agent --pool <file>
 
 This writes `~/Library/LaunchAgents/chuggy-darwin.<pool file less .json>.plist`, which runs `run` for that pool file under the `node` and with the PATH of this shell, since launchd's own PATH finds no Homebrew docker; it takes the link on PATH, such as `/opt/homebrew/bin/node`, which an upgrade keeps. It takes no other variable, so a `DOCKER_HOST` or `DOCKER_CONTEXT` set in the shell does not reach the agent, which uses docker's current context. It prints how to load it. launchd starts the agent when the user logs in to the Mac's desktop, and again after any exit but 0, after a pause, so an agent started before Colima tries again; a pool the plane denied stays down. It runs only while the user is logged in. Its output goes to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<pool file less .json>.log`. `brew services start colima` starts Colima at login too.
 
+Where nobody is logged in at the Mac's screen, as on a Mac reached only over ssh, launchd has no desktop session to load an agent into. `install-agent` then writes the agent for the user's background session instead, and prints how to load it into launchd's `user` domain, where it runs on after the ssh session ends. After the Mac restarts, start Colima and run those commands again.
+
 An agent runs the registration it read when it started, so registering again a pool or personal runner its agent serves prints the `launchctl kickstart` that restarts it on the new one.
 
 ## Updates
