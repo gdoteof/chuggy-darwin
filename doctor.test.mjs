@@ -28,7 +28,7 @@ const ownUid = process.getuid?.() ?? -1;
 
 /**
  * @param {import("node:test").TestContext} t
- * @param {{architecture?: string, name?: string, diskGib?: number}} [vm] its architecture, the name docker gives it and the GiB free on its disk, when not Colima's default VM on arm64 with 90 GiB free
+ * @param {{architecture?: string, name?: string, diskGib?: number, rosetta?: "enabled" | "disabled" | "absent"}} [vm] its architecture, the name docker gives it, the GiB free on its disk and its Rosetta, when not Colima's default VM on arm64 with 90 GiB free and Rosetta enabled
  * @param {Parameters<typeof runnerFixture>[1]} [documents]
  * @param {(fixture: MacFixture) => Promise<DoctorSeen>} [prepared] what a suite makes of the Mac's files before doctor reads them
  */
@@ -56,7 +56,9 @@ async function doctored(
     claudeVersion: async (file) => seen.claudeVersions?.[file],
     parts: {
       engine: () => engine,
-      colima: () => fakeColima(vm.diskGib ?? 90).colima,
+      colima: () =>
+        fakeColima(vm.diskGib ?? 90, { rosetta: vm.rosetta ?? "enabled" })
+          .colima,
       tokens: () => ({
         acquire: async () => ({ acquired: "Token", token: "pool-token" }),
         invalidate: () => undefined,
@@ -210,11 +212,31 @@ test("doctor says what a run advertises and where it comes from, the platform of
         },
       ),
     ) ?? "",
-    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:MacOS:Arm64, Tool:Xcode, Agent:Claude on each poll: docker's VM's platform, the Mac's, the agents .+ can run, and its capabilities$/u,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64, Platform:MacOS:Arm64, Tool:Xcode, Agent:Claude on each poll: docker's VM's platforms, the Mac's, the agents .+ can run, and its capabilities$/u,
   );
   assert.equal(
     advertised(await doctored(t, { architecture: "riscv64" })),
     "FAIL  capabilities: docker's VM is riscv64, which no pool runs",
+  );
+});
+
+test("doctor warns where an arm64 VM runs no amd64 through Rosetta, saying how to have it, or where Rosetta cannot be asked after", async (t) => {
+  /** @param {string[]} lines */
+  const advertised = (lines) =>
+    lines.find((line) => line.includes("capabilities:"));
+  for (const rosetta of /** @type {const} */ (["absent", "disabled"]))
+    assert.match(
+      advertised(await doctored(t, { rosetta })) ?? "",
+      /^warn {2}capabilities: a run advertises Platform:Linux:Arm64 on each poll: docker's VM's platform, .+; docker's VM runs no amd64 through Rosetta, so no job asking for Platform:Linux:Amd64 reaches this runner; install Rosetta with `softwareupdate --install-rosetta --agree-to-license`, then stop Colima and start it with `colima start --vz-rosetta`$/u,
+      rosetta,
+    );
+  assert.match(
+    advertised(await doctored(t, { name: "docker-desktop" })) ?? "",
+    /^warn {2}capabilities: a run advertises Platform:Linux:Arm64 on each poll: .+; whether docker's VM runs amd64 through Rosetta could not be found, so no job asking for Platform:Linux:Amd64 reaches this runner: docker names its machine docker-desktop, which is no Colima VM$/u,
+  );
+  assert.match(
+    advertised(await doctored(t)) ?? "",
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64 on each poll: docker's VM's platforms, /u,
   );
 });
 

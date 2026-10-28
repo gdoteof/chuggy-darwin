@@ -942,7 +942,7 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   );
   assert.match(
     out,
-    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64 on each poll: /mu,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64 on each poll: /mu,
   );
   assert.match(err, /^warn {2}launchd agent: none; install-agent writes /mu);
   assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);

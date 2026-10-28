@@ -7,6 +7,7 @@
  */
 
 import { containerEngine } from "@chuggy/worker-core/engine.mjs";
+import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
 
 /**
  * @typedef {Pick<import("@chuggy/worker-core/engine.mjs").Engine, "exec">} ColimaCli
@@ -39,4 +40,36 @@ export function colimaProfile(machine) {
  */
 export function colimaVmArgv(profile, argv) {
   return ["ssh", "--profile", profile, "--", ...argv];
+}
+
+/** Where Linux lists the interpreters it runs other architectures' programs through. */
+const binfmtMisc = "/proc/sys/fs/binfmt_misc";
+
+/**
+ * Whether the profile's VM runs amd64 programs through Rosetta: Linux holds
+ * an enabled interpreter named rosetta, as Colima registers one where it was
+ * started with `--vz-rosetta` on a Mac with Rosetta installed. Without one,
+ * Colima's VM runs them through QEMU.
+ *
+ * @param {ColimaCli} colima
+ * @param {string} profile
+ * @returns {Promise<{rosetta: boolean} | {unknown: string}>}
+ */
+export async function colimaRosetta(colima, profile) {
+  const listed = await colima.exec(
+    colimaVmArgv(profile, ["ls", "-1", binfmtMisc]),
+  );
+  if (listed.code !== 0)
+    return {
+      unknown: `${binfmtMisc} could not be listed in Colima's VM ${profile}: ${engineFailureLine(listed)}`,
+    };
+  if (!listed.stdout.split("\n").includes("rosetta")) return { rosetta: false };
+  const entry = await colima.exec(
+    colimaVmArgv(profile, ["cat", `${binfmtMisc}/rosetta`]),
+  );
+  if (entry.code !== 0)
+    return {
+      unknown: `${binfmtMisc}/rosetta could not be read in Colima's VM ${profile}: ${engineFailureLine(entry)}`,
+    };
+  return { rosetta: entry.stdout.split("\n")[0] === "enabled" };
 }

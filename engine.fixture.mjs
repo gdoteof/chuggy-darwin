@@ -396,7 +396,10 @@ function answer(state, call) {
   if (verb === "pull") return pulled(state, call);
   if (verb === "info" && call.argv[2] === "{{json .}}")
     return answered(infoPrinted(state));
-  if (verb === "info") return answered(`${JSON.stringify(state.machine)}\n`);
+  if (verb === "info")
+    return answered(
+      `${JSON.stringify({ ...state.machine, name: state.info.Name })}\n`,
+    );
   if (verb === "context")
     return state.contextHost === undefined
       ? failed('context "default": context not found')
@@ -475,12 +478,14 @@ export function deferred() {
 /**
  * Colima's CLI, answering a command in its default VM as that VM would: `df
  * -P -k` with `gib` GiB free under every path but those `paths` sets, in 1
- * KiB blocks. It records each path it measures.
+ * KiB blocks, and binfmt_misc's listing and its rosetta entry, enabled
+ * unless `rosetta` says otherwise. It records each path it measures.
  *
  * @param {number} gib
- * @param {Record<string, number>} [paths]
+ * @param {{paths?: Record<string, number>, rosetta?: "enabled" | "disabled" | "absent"}} [vm]
  */
-export function fakeColima(gib, paths = {}) {
+export function fakeColima(gib, vm = {}) {
+  const { paths = {}, rosetta = "enabled" } = vm;
   /** @type {string[]} */
   const measured = [];
   /** @type {string[][]} */
@@ -496,6 +501,24 @@ export function fakeColima(gib, paths = {}) {
         return failed(
           `time="2026-10-27T22:38:17-04:00" level=fatal msg="colima [profile=${profile}] not running"`,
         );
+      const binfmt = "/proc/sys/fs/binfmt_misc";
+      if (command === "ls" && rest.join(" ") === `-1 ${binfmt}`)
+        return answered(
+          [
+            "qemu-x86_64",
+            "register",
+            ...(rosetta === "absent" ? [] : ["rosetta"]),
+            "status",
+          ]
+            .map((name) => `${name}\n`)
+            .join(""),
+        );
+      if (command === "cat" && rest.join(" ") === `${binfmt}/rosetta`)
+        return rosetta === "absent"
+          ? failed(`cat: ${binfmt}/rosetta: No such file or directory`)
+          : answered(
+              `${rosetta}\ninterpreter /mnt/lima-rosetta/rosetta\nflags: OCF\n`,
+            );
       if (command !== "df" || rest[0] !== "-P" || rest[1] !== "-k")
         return failed(`unknown command: ${argv.join(" ")}`);
       const rows = rest.slice(2).map((path) => {

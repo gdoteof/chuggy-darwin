@@ -5,8 +5,9 @@
  * nothing and advertises nothing, which the plane answers without granting or
  * releasing a lease or changing what the pool advertised.
  *
- * Beside what a run needs, it says what a run advertises, whose platform is
- * whichever docker's VM runs when the run starts, and whether an agent serves
+ * Beside what a run needs, it says what a run advertises, whose platforms are
+ * whichever docker's VM runs when the run starts, warning where an Apple
+ * silicon Mac's VM runs no amd64 through Rosetta, and whether an agent serves
  * the pool.
  */
 
@@ -51,7 +52,9 @@ import {
   dockerMachine,
   poolRuntimeDirectory,
   poolSocket,
+  rosettaPlatform,
   runnerCapabilities,
+  vmPlatformsFound,
 } from "./runner.mjs";
 import {
   claudeCredentialFileRefusal,
@@ -251,6 +254,68 @@ async function claudeCredentialFinding(input, config, host) {
 }
 
 /**
+ * What this pool's run advertises on each poll, as a run finds it when it
+ * starts, and where what is neither a platform nor an agent comes from:
+ * warned of where an arm64 VM takes no amd64 work, since most work asks for
+ * it, and failed where a run would be refused.
+ *
+ * @param {DoctorInput} input
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @param {{arch: string, name: string}} machine docker's VM
+ * @returns {Promise<DoctorFinding>}
+ */
+async function capabilitiesFinding(input, credentials, config, machine) {
+  const check = "capabilities";
+  let vm;
+  let advertised;
+  try {
+    vm = await vmPlatformsFound(machine, input.parts.colima());
+    advertised = runnerCapabilities(
+      { credentials, config, paths: input.paths },
+      vm.platforms,
+    );
+  } catch (failure) {
+    return {
+      check,
+      passed: false,
+      detail: failure instanceof Error ? failure.message : String(failure),
+    };
+  }
+  const found = [
+    vm.platforms.length === 1
+      ? "docker's VM's platform"
+      : "docker's VM's platforms",
+    ...(credentials.host === true ? ["the Mac's"] : []),
+    `the agents ${input.paths.config} can run`,
+  ].join(", ");
+  const rest =
+    config.capabilities === undefined
+      ? "the rest of what the pool was registered with"
+      : "its capabilities";
+  const detail = `a run advertises ${advertised.join(", ")} on each poll: ${found}, and ${rest}`;
+  const amd64 = amd64Unrun(vm.rosetta);
+  return amd64 === undefined
+    ? { check, passed: true, detail }
+    : { check, passed: true, warning: true, detail: `${detail}; ${amd64}` };
+}
+
+/**
+ * Why an arm64 VM takes no amd64 work, and what would have it take some, or
+ * nothing where it takes it or is no arm64 VM.
+ *
+ * @param {{rosetta: boolean} | {unknown: string} | undefined} rosetta what was found of Rosetta in an arm64 VM
+ */
+function amd64Unrun(rosetta) {
+  if (rosetta === undefined || ("rosetta" in rosetta && rosetta.rosetta))
+    return undefined;
+  const unrun = `so no job asking for ${rosettaPlatform} reaches this runner`;
+  if ("unknown" in rosetta)
+    return `whether docker's VM runs amd64 through Rosetta could not be found, ${unrun}: ${rosetta.unknown}`;
+  return `docker's VM runs no amd64 through Rosetta, ${unrun}; install Rosetta with \`softwareupdate --install-rosetta --agree-to-license\`, then stop Colima and start it with \`colima start --vz-rosetta\``;
+}
+
+/**
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
@@ -270,25 +335,7 @@ async function engineChecks(input, credentials, config, findings) {
     ];
   });
   if (machine === undefined) return;
-  await checked(findings, "capabilities", async () => {
-    const advertised = runnerCapabilities(
-      { credentials, config, paths: input.paths },
-      machine.arch,
-    );
-    const found = [
-      "docker's VM's platform",
-      ...(credentials.host === true ? ["the Mac's"] : []),
-      `the agents ${input.paths.config} can run`,
-    ].join(", ");
-    const rest =
-      config.capabilities === undefined
-        ? "the rest of what the pool was registered with"
-        : "its capabilities";
-    return [
-      true,
-      `a run advertises ${advertised.join(", ")} on each poll: ${found}, and ${rest}`,
-    ];
-  });
+  findings.push(await capabilitiesFinding(input, credentials, config, machine));
   await checked(findings, "job network", async () => {
     const inspected = await engine.exec(networkInspectArgv(config.network));
     if (inspected.code === 0) return [true, `${config.network} is present`];

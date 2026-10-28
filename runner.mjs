@@ -53,7 +53,7 @@ import {
 import { registerAdvertised } from "@chuggy/worker-core/register.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
-import { colimaCli } from "./colimaVm.mjs";
+import { colimaCli, colimaProfile, colimaRosetta } from "./colimaVm.mjs";
 import { diskFloorBytes, vmDiskFree } from "./diskFree.mjs";
 import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
@@ -168,13 +168,14 @@ export function runnerEngine() {
 const dockerMachineArgv = [
   "info",
   "--format",
-  '{"cpus":{{json .NCPU}},"memoryBytes":{{json .MemTotal}},"architecture":{{json .Architecture}}}',
+  '{"cpus":{{json .NCPU}},"memoryBytes":{{json .MemTotal}},"architecture":{{json .Architecture}},"name":{{json .Name}}}',
 ];
 
 const dockerMachineSchema = z.object({
   cpus: z.number().int().positive().safe(),
   memoryBytes: z.number().int().positive().safe(),
   architecture: z.string(),
+  name: z.string(),
 });
 
 /**
@@ -212,6 +213,41 @@ const hostPlatforms = /** @type {Record<string, string>} */ ({
   x64: "Platform:MacOS:Amd64",
 });
 
+/** The platform an arm64 VM runs amd64 programs as, through Rosetta. */
+export const rosettaPlatform = vmPlatforms.x64;
+
+/**
+ * The platforms docker's VM runs, its own architecture's first, and on an
+ * arm64 VM Amd64's beside it where Colima runs amd64 programs there through
+ * Rosetta, with what was found of Rosetta on an arm64 VM. QEMU, which runs
+ * them where Rosetta does not, is too slow to take amd64 work through. A VM
+ * no pool runs on is refused.
+ *
+ * @param {{arch: string, name: string}} machine docker's VM, as `dockerMachine` finds it
+ * @param {import("./colimaVm.mjs").ColimaCli} colima
+ * @returns {Promise<{platforms: string[], rosetta?: {rosetta: boolean} | {unknown: string}}>}
+ */
+export async function vmPlatformsFound(machine, colima) {
+  const platform = vmPlatform(machine.arch);
+  if (platform === undefined)
+    throw new Error(`docker's VM is ${machine.arch}, which no pool runs`);
+  if (machine.arch !== "arm64") return { platforms: [platform] };
+  const profile = colimaProfile(machine.name);
+  const rosetta =
+    profile === undefined
+      ? {
+          unknown: `docker names its machine ${machine.name}, which is no Colima VM`,
+        }
+      : await colimaRosetta(colima, profile);
+  return {
+    platforms:
+      "rosetta" in rosetta && rosetta.rosetta
+        ? [platform, rosettaPlatform]
+        : [platform],
+    rosetta,
+  };
+}
+
 /**
  * The platform a Mac of this architecture is, or nothing for one no pool runs
  * work on the host of.
@@ -224,23 +260,20 @@ export function hostPlatform(arch) {
 
 /**
  * The capabilities each poll of a pool's run advertises, found when it
- * starts: the platform docker's VM runs, the Mac's beside it where the pool
- * was registered with `--host`, the agents the runner's file can run, and
- * what the file's `capabilities` declares or, where it is absent, the rest of
- * what the pool was registered with. A VM no pool runs on, and a set past the
- * contract's bound, are refused.
+ * starts: the platforms docker's VM runs, the Mac's beside them where the
+ * pool was registered with `--host`, the agents the runner's file can run,
+ * and what the file's `capabilities` declares or, where it is absent, the
+ * rest of what the pool was registered with. A set past the contract's bound
+ * is refused.
  *
  * @param {Pick<RunnerSetup, "credentials" | "config" | "paths">} setup
- * @param {string} arch docker's VM, as `process.arch` names one
+ * @param {readonly string[]} vm the platforms docker's VM runs, as `vmPlatformsFound` finds them
  * @returns {string[]}
  */
-export function runnerCapabilities(setup, arch) {
+export function runnerCapabilities(setup, vm) {
   const { credentials, config, paths } = setup;
-  const platform = vmPlatform(arch);
-  if (platform === undefined)
-    throw new Error(`docker's VM is ${arch}, which no pool runs`);
   const advertised = registerAdvertised({
-    platforms: [platform, ...hostPlatformsDeclared(credentials, "MacOS")],
+    platforms: [...vm, ...hostPlatformsDeclared(credentials, "MacOS")],
     files: runnerClaudeHanded(config),
     images: config.images,
     host: credentials.host === true,
@@ -256,10 +289,10 @@ export function runnerCapabilities(setup, arch) {
 
 /**
  * The machine docker runs containers on: its size, as a job is sized against
- * it, and its architecture, as `process.arch` names one.
+ * it, its architecture, as `process.arch` names one, and its name.
  *
  * @param {Engine} engine
- * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, arch: string}>}
+ * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, arch: string, name: string}>}
  */
 export async function dockerMachine(engine) {
   const info = await engine.exec(dockerMachineArgv);
@@ -281,6 +314,7 @@ export async function dockerMachine(engine) {
     arch: Object.hasOwn(dockerArchitectures, parsed.architecture)
       ? dockerArchitectures[parsed.architecture]
       : parsed.architecture,
+    name: parsed.name,
   };
 }
 
@@ -319,9 +353,14 @@ export async function runnerParts(setup, host) {
   const engine = host.engine ?? runnerEngine();
   const colima = host.colima ?? colimaCli();
   const dockerHost = await dockerEndpoint(engine);
-  const { size, arch } = await dockerMachine(engine);
+  const machine = await dockerMachine(engine);
   const capabilities =
-    host.polls === false ? undefined : runnerCapabilities(setup, arch);
+    host.polls === false
+      ? undefined
+      : runnerCapabilities(
+          setup,
+          (await vmPlatformsFound(machine, colima)).platforms,
+        );
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const claude = runnerClaudeHanded(config);
   const tokenFileRefusal = (/** @type {string} */ file) =>
@@ -342,7 +381,7 @@ export async function runnerParts(setup, host) {
       network: config.network,
       runtimeDir: runtime,
       logDir: paths.logs,
-      machine: size,
+      machine: machine.size,
       pullRetryMs,
       images: config.images,
       imageRecord: join(paths.images, "docker.json"),

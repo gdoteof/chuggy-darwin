@@ -40,7 +40,7 @@ test("docker's free disk is measured in Colima's VM: its root directory's, and c
   assert.deepEqual(rooted.calls, [
     ["ssh", "--profile", "default", "--", "df", "-P", "-k", "/var/lib/docker"],
   ]);
-  const both = fakeColima(40, { "/var/lib/containerd": 12.5 });
+  const both = fakeColima(40, { paths: { "/var/lib/containerd": 12.5 } });
   assert.deepEqual(await vmDiskFree(dockerSaying(snapshotter), both.colima), {
     free: 12.5 * gib,
     where: "/var/lib/containerd in Colima's VM",

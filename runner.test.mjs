@@ -29,6 +29,7 @@ import {
   runnerParts,
   runnerSetup,
   socketPathBytesMax,
+  vmPlatformsFound,
 } from "./runner.mjs";
 import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
@@ -57,6 +58,7 @@ test("a job is sized against the VM docker runs it in, not the Mac", async (t) =
     architecture: "aarch64",
   };
   const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
     uid: ownUid,
     home,
     log: () => undefined,
@@ -92,6 +94,7 @@ test("a run's backend refuses an assignment while the token file lies outside th
   );
   const { engine, state } = fakeEngine();
   const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
     uid: ownUid,
     home,
     log: () => undefined,
@@ -125,6 +128,7 @@ test("a pool registered with --host takes a job that pins no image and names the
   );
   const { engine, state } = fakeEngine();
   const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
     uid: ownUid + 1,
     home,
     log: () => undefined,
@@ -155,15 +159,17 @@ test("a pool registered with --host takes a job that pins no image and names the
  * VM's, an agent it has no image or host to run, a capability twice, or what
  * the pool was registered with beside what its own file declares.
  */
-test("a run advertises the VM's platform, the Mac's under --host, the agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
+test("a run advertises the VM's platforms, the Mac's under --host, the agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
   /**
    * @param {Parameters<typeof runnerFixture>[1]} documents
-   * @param {string} arch docker's VM's
+   * @param {string[]} vm the platforms docker's VM runs
    */
-  const advertised = async (documents, arch) => {
+  const advertised = async (documents, vm) => {
     const { home, poolFile } = await runnerFixture(t, documents);
-    return runnerCapabilities(await runnerSetup(poolFile, home), arch);
+    return runnerCapabilities(await runnerSetup(poolFile, home), vm);
   };
+  const arm64 = "Platform:Linux:Arm64";
+  const amd64 = "Platform:Linux:Amd64";
   const registered = {
     ...fixturePool,
     capabilities: [
@@ -177,39 +183,34 @@ test("a run advertises the VM's platform, the Mac's under --host, the agents its
   const claudeImages = [
     { image: "registry.example/claude", capabilities: ["Agent:Claude"] },
   ];
-  for (const [documents, arch, capabilities] of [
-    [{}, "arm64", ["Platform:Linux:Arm64"]],
+  for (const [documents, vm, capabilities] of [
+    [{}, [arm64], [arm64]],
     [
       { pool: registered, runner: { images: claudeImages } },
-      "x64",
-      ["Platform:Linux:Amd64", "Tool:Xcode", "Agent:Claude"],
+      [amd64],
+      [amd64, "Tool:Xcode", "Agent:Claude"],
     ],
-    [{ pool: registered }, "arm64", ["Platform:Linux:Arm64", "Tool:Xcode"]],
+    [{ pool: registered }, [arm64, amd64], [arm64, amd64, "Tool:Xcode"]],
     [
       { pool: { ...registered, host: true } },
-      "arm64",
-      [
-        "Platform:Linux:Arm64",
-        "Platform:MacOS:Arm64",
-        "Tool:Xcode",
-        "Agent:Claude",
-      ],
+      [arm64],
+      [arm64, "Platform:MacOS:Arm64", "Tool:Xcode", "Agent:Claude"],
     ],
     [
       { pool: registered, runner: { images: claudeImages, capabilities: [] } },
-      "arm64",
-      ["Platform:Linux:Arm64", "Agent:Claude"],
+      [arm64],
+      [arm64, "Agent:Claude"],
     ],
     [
       { pool: registered, runner: { capabilities: ["gpu"] } },
-      "arm64",
-      ["Platform:Linux:Arm64", "gpu"],
+      [arm64],
+      [arm64, "gpu"],
     ],
   ])
     assert.deepEqual(
       await advertised(
         /** @type {Parameters<typeof runnerFixture>[1]} */ (documents),
-        /** @type {string} */ (arch),
+        /** @type {string[]} */ (vm),
       ),
       capabilities,
       JSON.stringify(documents),
@@ -229,24 +230,107 @@ test("a run is refused on a VM no pool runs on, and where it would advertise mor
   });
   const setup = await runnerSetup(poolFile, home);
   assert.throws(
-    () => runnerCapabilities(setup, "arm64"),
+    () => runnerCapabilities(setup, ["Platform:Linux:Arm64"]),
     new Error(
       `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 65 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
     ),
   );
   const host = { uid: ownUid, home, log: () => undefined };
   await assert.rejects(
-    runnerParts(setup, { ...host, engine: fakeEngine().engine }),
-    /^Error: runner configuration .*: capabilities: this runner would advertise 65 /u,
+    runnerParts(setup, {
+      colima: fakeColima(90).colima,
+      ...host,
+      engine: fakeEngine().engine,
+    }),
+    /^Error: runner configuration .*: capabilities: this runner would advertise 66 /u,
   );
   const { engine, state } = fakeEngine();
   state.machine = { ...state.machine, architecture: "riscv64" };
-  await runnerParts(setup, { ...host, engine, polls: false });
-  const fitting = { ...setup, config: { ...setup.config, capabilities: [] } };
-  assert.throws(
-    () => runnerCapabilities(fitting, "riscv64"),
+  await runnerParts(setup, {
+    colima: fakeColima(90).colima,
+    ...host,
+    engine,
+    polls: false,
+  });
+  await assert.rejects(
+    vmPlatformsFound(
+      { arch: "riscv64", name: "colima" },
+      fakeColima(90).colima,
+    ),
     new Error("docker's VM is riscv64, which no pool runs"),
   );
+});
+
+/**
+ * Catches an arm64 VM advertising Amd64 without Rosetta, where QEMU would run
+ * amd64 work at a small fraction of the speed, or not advertising it with
+ * Rosetta, where most work asks for it; and Colima asked of a VM it does not
+ * run, or of Rosetta where the VM runs amd64 itself.
+ */
+test("an arm64 VM runs Amd64 beside Arm64 where Colima runs amd64 there through Rosetta, and an x86_64 VM runs Amd64 alone", async () => {
+  const arm64 = "Platform:Linux:Arm64";
+  const amd64 = "Platform:Linux:Amd64";
+  const colima = { arch: "arm64", name: "colima" };
+  for (const [rosetta, platforms, found] of /** @type {const} */ ([
+    ["enabled", [arm64, amd64], { rosetta: true }],
+    ["disabled", [arm64], { rosetta: false }],
+    ["absent", [arm64], { rosetta: false }],
+  ]))
+    assert.deepEqual(
+      await vmPlatformsFound(colima, fakeColima(90, { rosetta }).colima),
+      { platforms, rosetta: found },
+      rosetta,
+    );
+  const intel = fakeColima(90);
+  assert.deepEqual(
+    await vmPlatformsFound({ arch: "x64", name: "colima" }, intel.colima),
+    { platforms: [amd64] },
+  );
+  assert.deepEqual(intel.calls, []);
+  const desktop = fakeColima(90);
+  assert.deepEqual(
+    await vmPlatformsFound(
+      { arch: "arm64", name: "docker-desktop" },
+      desktop.colima,
+    ),
+    {
+      platforms: [arm64],
+      rosetta: {
+        unknown:
+          "docker names its machine docker-desktop, which is no Colima VM",
+      },
+    },
+  );
+  assert.deepEqual(desktop.calls, []);
+  const work = fakeColima(90);
+  assert.deepEqual(
+    await vmPlatformsFound({ arch: "arm64", name: "colima-work" }, work.colima),
+    {
+      platforms: [arm64],
+      rosetta: {
+        unknown:
+          '/proc/sys/fs/binfmt_misc could not be listed in Colima\'s VM work: time="2026-10-27T22:38:17-04:00" level=fatal msg="colima [profile=work] not running"',
+      },
+    },
+  );
+  const unreadable = {
+    /** @param {readonly string[]} argv */
+    exec: async (argv) =>
+      argv.includes("ls")
+        ? { code: 0, stdout: "rosetta\nstatus\n", stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "cat: /proc/sys/fs/binfmt_misc/rosetta: Permission denied",
+          },
+  };
+  assert.deepEqual(await vmPlatformsFound(colima, unreadable), {
+    platforms: [arm64],
+    rosetta: {
+      unknown:
+        "/proc/sys/fs/binfmt_misc/rosetta could not be read in Colima's VM default: cat: /proc/sys/fs/binfmt_misc/rosetta: Permission denied",
+    },
+  });
 });
 
 /**
@@ -272,6 +356,7 @@ test("each poll of a run names what it advertises, and a command that never poll
   });
   for (const polls of [true, false]) {
     const runner = await runnerParts(setup, {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -280,7 +365,7 @@ test("each poll of a run names what it advertises, and a command that never poll
     });
     await runner.client.plane.poll("pool-token", [], 0, 0);
   }
-  assert.deepEqual(named, ["Platform:Linux:Arm64", null]);
+  assert.deepEqual(named, ["Platform:Linux:Arm64,Platform:Linux:Amd64", null]);
 });
 
 test("a runner's client is given its own pool's limits from pools, and the file's where pools names another, a concurrencyMax of 0 among them", async (t) => {
@@ -300,6 +385,7 @@ test("a runner's client is given its own pool's limits from pools, and the file'
     });
     const { engine } = fakeEngine();
     const { client } = await runnerParts(await runnerSetup(poolFile, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -345,6 +431,7 @@ test("a run removes a job's image it pulled once unused for as long as its file 
     const removed = [];
     const answered = (stdout = "") => ({ code: 0, stdout, stderr: "" });
     const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -457,6 +544,7 @@ test("a run's memory budget is the VM's memory less the GiB its file keeps free,
       runner: memoryFreeGibMin === undefined ? {} : { memoryFreeGibMin },
     });
     const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -478,6 +566,7 @@ test("a run's ceiling for a job is its budget less the GiB its file reserves, no
       runner: memoryReservedGib === undefined ? {} : { memoryReservedGib },
     });
     const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -526,6 +615,7 @@ test("every pool's agent of a user starts its jobs under the one memory lock of 
     [otherFile, "asg-2"],
   ])) {
     const runner = await runnerParts(await runnerSetup(file, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -547,6 +637,7 @@ test("docker's machine is its VM's size and architecture, named as Node names on
   assert.deepEqual(await dockerMachine(engine), {
     size: { cpuMillis: 2000, memoryMib: 2048 },
     arch: "arm64",
+    name: "colima",
   });
   state.machine = { ...state.machine, architecture: "x86_64" };
   assert.equal((await dockerMachine(engine)).arch, "x64");
@@ -799,6 +890,7 @@ test("a job and a session in a container are each told the kind of Claude creden
     await claudeNamed(paths, named);
     const { engine, state } = fakeEngine();
     const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
@@ -844,6 +936,7 @@ test("a job on the Mac itself is told the kind of Claude credential the runner's
     /** @type {Promise<unknown>[]} */
     const closed = [];
     const runner = await runnerParts(await runnerSetup(poolFile, home), {
+      colima: fakeColima(90).colima,
       uid: ownUid,
       home,
       log: () => undefined,
