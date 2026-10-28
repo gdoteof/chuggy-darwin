@@ -1,12 +1,13 @@
 /**
  * What `doctor` checks, in the order a run depends on them, each answered as
  * passed or not with what was found. It changes nothing: a missing network is
- * reported for a run to make, and its one poll names nothing held and wants
- * nothing, which the plane answers without granting or releasing a lease.
+ * reported for a run to make, and its one poll names nothing held, wants
+ * nothing and advertises nothing, which the plane answers without granting or
+ * releasing a lease or changing what the pool advertised.
  *
- * Beside what a run needs, it checks what only a Mac gets wrong: that docker's
- * VM still runs the platform the pool registered, which a VM started again
- * with another architecture would not, and whether an agent serves the pool.
+ * Beside what a run needs, it says what a run advertises, whose platform is
+ * whichever docker's VM runs when the run starts, and whether an agent serves
+ * the pool.
  */
 
 import { execFile } from "node:child_process";
@@ -50,7 +51,7 @@ import {
   dockerMachine,
   poolRuntimeDirectory,
   poolSocket,
-  vmPlatform,
+  runnerCapabilities,
 } from "./runner.mjs";
 import {
   claudeCredentialFileRefusal,
@@ -269,15 +270,24 @@ async function engineChecks(input, credentials, config, findings) {
     ];
   });
   if (machine === undefined) return;
-  await checked(findings, "platform", async () => {
-    const platform = vmPlatform(machine.arch);
-    if (platform === undefined)
-      throw new Error(`docker's VM is ${machine.arch}, which no pool runs`);
-    if (!credentials.capabilities.includes(platform))
-      throw new Error(
-        `docker's VM runs ${platform}, and the pool registered ${credentials.capabilities.join(", ")}; start Colima with the architecture it registered, or register the pool again`,
-      );
-    return [true, `docker's VM runs ${platform}, as the pool registered`];
+  await checked(findings, "capabilities", async () => {
+    const advertised = runnerCapabilities(
+      { credentials, config, paths: input.paths },
+      machine.arch,
+    );
+    const found = [
+      "docker's VM's platform",
+      ...(credentials.host === true ? ["the Mac's"] : []),
+      `the agents ${input.paths.config} can run`,
+    ].join(", ");
+    const rest =
+      config.capabilities === undefined
+        ? "the rest of what the pool was registered with"
+        : "its capabilities";
+    return [
+      true,
+      `a run advertises ${advertised.join(", ")} on each poll: ${found}, and ${rest}`,
+    ];
   });
   await checked(findings, "job network", async () => {
     const inspected = await engine.exec(networkInspectArgv(config.network));

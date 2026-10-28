@@ -9,7 +9,8 @@
  * architecture it was started with, and docker says which. A pool registered
  * with `--host` declares the Mac's platform too, and its pool file says so, and
  * a job that pins no image and names it runs on the Mac itself, sized against
- * the Mac.
+ * the Mac. Each poll advertises what the runner finds of the VM and its file
+ * when the run starts.
  *
  * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
  * the runner's file names `claudeTokenFile`. The core withholds what would
@@ -49,6 +50,7 @@ import {
   poolRunnerClient,
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
+import { registerAdvertised } from "@chuggy/worker-core/register.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
 import { colimaCli } from "./colimaVm.mjs";
@@ -221,6 +223,38 @@ export function hostPlatform(arch) {
 }
 
 /**
+ * The capabilities each poll of a pool's run advertises, found when it
+ * starts: the platform docker's VM runs, the Mac's beside it where the pool
+ * was registered with `--host`, the agents the runner's file can run, and
+ * what the file's `capabilities` declares or, where it is absent, the rest of
+ * what the pool was registered with. A VM no pool runs on, and a set past the
+ * contract's bound, are refused.
+ *
+ * @param {Pick<RunnerSetup, "credentials" | "config" | "paths">} setup
+ * @param {string} arch docker's VM, as `process.arch` names one
+ * @returns {string[]}
+ */
+export function runnerCapabilities(setup, arch) {
+  const { credentials, config, paths } = setup;
+  const platform = vmPlatform(arch);
+  if (platform === undefined)
+    throw new Error(`docker's VM is ${arch}, which no pool runs`);
+  const advertised = registerAdvertised({
+    platforms: [platform, ...hostPlatformsDeclared(credentials, "MacOS")],
+    files: runnerClaudeHanded(config),
+    images: config.images,
+    host: credentials.host === true,
+    declared: config.capabilities,
+    recorded: credentials.capabilities,
+  });
+  if ("refused" in advertised)
+    throw new Error(
+      `runner configuration ${paths.config}: capabilities: ${advertised.refused}`,
+    );
+  return advertised.capabilities;
+}
+
+/**
  * The machine docker runs containers on: its size, as a job is sized against
  * it, and its architecture, as `process.arch` names one.
  *
@@ -275,7 +309,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn}} host this process's uid and home, where its log lines go, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, and what starts a job on the Mac itself when not Node's own `spawn`
+ * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn, polls?: boolean}} host this process's uid and home, where its log lines go, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, what starts a job on the Mac itself when not Node's own `spawn`, and `polls: false` for a command that never polls, which then finds nothing to advertise
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -285,7 +319,9 @@ export async function runnerParts(setup, host) {
   const engine = host.engine ?? runnerEngine();
   const colima = host.colima ?? colimaCli();
   const dockerHost = await dockerEndpoint(engine);
-  const { size } = await dockerMachine(engine);
+  const { size, arch } = await dockerMachine(engine);
+  const capabilities =
+    host.polls === false ? undefined : runnerCapabilities(setup, arch);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const claude = runnerClaudeHanded(config);
   const tokenFileRefusal = (/** @type {string} */ file) =>
@@ -337,7 +373,7 @@ export async function runnerParts(setup, host) {
     credentials,
     poweredBackend(backend, power),
     runnerPoolLimits(config, setup.poolFile),
-    { tokens, fetch: host.fetch },
+    { tokens, fetch: host.fetch, capabilities },
   );
   return { runtime, socket, engine, colima, backend, client };
 }

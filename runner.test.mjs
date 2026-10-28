@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
+import { workerRunnerCapabilitiesHeader } from "@chuggy/worker-contract/workerPool";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
 import { heldLabel } from "@chuggy/worker-core/engineArgv.mjs";
 import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
@@ -22,6 +23,7 @@ import {
   poolSocket,
   runnerDirectories,
   runnerLeftoversRemoved,
+  runnerCapabilities,
   runnerClaimLock,
   runnerMemoryLock,
   runnerParts,
@@ -146,6 +148,139 @@ test("a pool registered with --host takes a job that pins no image and names the
   assert.equal(state.calls.length, calls);
   assert.deepEqual(runner.backend.inFlight(), []);
   assert.ok(paths.jobs.startsWith(home));
+});
+
+/**
+ * Catches a run advertising a platform its pool file names in place of the
+ * VM's, an agent it has no image or host to run, a capability twice, or what
+ * the pool was registered with beside what its own file declares.
+ */
+test("a run advertises the VM's platform, the Mac's under --host, the agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
+  /**
+   * @param {Parameters<typeof runnerFixture>[1]} documents
+   * @param {string} arch docker's VM's
+   */
+  const advertised = async (documents, arch) => {
+    const { home, poolFile } = await runnerFixture(t, documents);
+    return runnerCapabilities(await runnerSetup(poolFile, home), arch);
+  };
+  const registered = {
+    ...fixturePool,
+    capabilities: [
+      "Platform:Linux:Arm64",
+      "Platform:MacOS:Arm64",
+      "Tool:Xcode",
+      "Tool:Xcode",
+      "Agent:Claude",
+    ],
+  };
+  const claudeImages = [
+    { image: "registry.example/claude", capabilities: ["Agent:Claude"] },
+  ];
+  for (const [documents, arch, capabilities] of [
+    [{}, "arm64", ["Platform:Linux:Arm64"]],
+    [
+      { pool: registered, runner: { images: claudeImages } },
+      "x64",
+      ["Platform:Linux:Amd64", "Tool:Xcode", "Agent:Claude"],
+    ],
+    [{ pool: registered }, "arm64", ["Platform:Linux:Arm64", "Tool:Xcode"]],
+    [
+      { pool: { ...registered, host: true } },
+      "arm64",
+      [
+        "Platform:Linux:Arm64",
+        "Platform:MacOS:Arm64",
+        "Tool:Xcode",
+        "Agent:Claude",
+      ],
+    ],
+    [
+      { pool: registered, runner: { images: claudeImages, capabilities: [] } },
+      "arm64",
+      ["Platform:Linux:Arm64", "Agent:Claude"],
+    ],
+    [
+      { pool: registered, runner: { capabilities: ["gpu"] } },
+      "arm64",
+      ["Platform:Linux:Arm64", "gpu"],
+    ],
+  ])
+    assert.deepEqual(
+      await advertised(
+        /** @type {Parameters<typeof runnerFixture>[1]} */ (documents),
+        /** @type {string} */ (arch),
+      ),
+      capabilities,
+      JSON.stringify(documents),
+    );
+});
+
+/**
+ * Catches a run started on a VM no pool runs on, or advertising a set the
+ * plane refuses, which would end the pool at its first poll, and a `status`
+ * or `stop`, which never polls, refused for it.
+ */
+test("a run is refused on a VM no pool runs on, and where it would advertise more than a pool may, naming the runner's file, while a command that never polls is not", async (t) => {
+  const { home, poolFile } = await runnerFixture(t, {
+    runner: {
+      capabilities: Array.from({ length: 64 }, (_, at) => `c${String(at)}`),
+    },
+  });
+  const setup = await runnerSetup(poolFile, home);
+  assert.throws(
+    () => runnerCapabilities(setup, "arm64"),
+    new Error(
+      `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 65 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
+    ),
+  );
+  const host = { uid: ownUid, home, log: () => undefined };
+  await assert.rejects(
+    runnerParts(setup, { ...host, engine: fakeEngine().engine }),
+    /^Error: runner configuration .*: capabilities: this runner would advertise 65 /u,
+  );
+  const { engine, state } = fakeEngine();
+  state.machine = { ...state.machine, architecture: "riscv64" };
+  await runnerParts(setup, { ...host, engine, polls: false });
+  const fitting = { ...setup, config: { ...setup.config, capabilities: [] } };
+  assert.throws(
+    () => runnerCapabilities(fitting, "riscv64"),
+    new Error("docker's VM is riscv64, which no pool runs"),
+  );
+});
+
+/**
+ * Catches a run that finds its set and polls without it, or a command that
+ * never polls advertising one.
+ */
+test("each poll of a run names what it advertises, and a command that never polls names none", async (t) => {
+  const { home, poolFile } = await runnerFixture(t);
+  const setup = await runnerSetup(poolFile, home);
+  /** @type {(string | null)[]} */
+  const named = [];
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    named.push(
+      new globalThis.Headers(init?.headers).get(workerRunnerCapabilitiesHeader),
+    );
+    return new globalThis.Response(
+      JSON.stringify({ assignments: [], sessions: [], stop: [] }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  });
+  for (const polls of [true, false]) {
+    const runner = await runnerParts(setup, {
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: fakeEngine().engine,
+      polls,
+    });
+    await runner.client.plane.poll("pool-token", [], 0, 0);
+  }
+  assert.deepEqual(named, ["Platform:Linux:Arm64", null]);
 });
 
 test("a runner's client is given its own pool's limits from pools, and the file's where pools names another, a concurrencyMax of 0 among them", async (t) => {

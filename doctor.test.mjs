@@ -86,7 +86,7 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    Claude credential",
       "warn  launchd agent",
       "ok    docker",
-      "ok    platform",
+      "ok    capabilities",
       "ok    job network",
       "ok    disk floor",
       "ok    pool token",
@@ -187,17 +187,34 @@ test("a pool registered with --host fails doctor where the runner's file names w
   assert.equal(hosted(await doctored(t)), undefined);
 });
 
-test("a VM started again with another architecture than the pool registered fails the platform check", async (t) => {
-  const lines = await doctored(t, { architecture: "x86_64" });
-  assert.ok(
-    lines.includes(
-      "FAIL  platform: docker's VM runs Platform:Linux:Amd64, and the pool registered Platform:Linux:Arm64; start Colima with the architecture it registered, or register the pool again",
-    ),
-    lines.join("\n"),
+test("doctor says what a run advertises and where it comes from, the platform of whichever VM docker runs, and fails where a run would be refused", async (t) => {
+  /** @param {string[]} lines */
+  const advertised = (lines) =>
+    lines.find((line) => line.includes("capabilities:"));
+  assert.match(
+    advertised(await doctored(t, { architecture: "x86_64" })) ?? "",
+    /^ok {4}capabilities: a run advertises Platform:Linux:Amd64 on each poll: docker's VM's platform, the agents .+\/runner\.json can run, and the rest of what the pool was registered with$/u,
   );
-  const odd = await doctored(t, { architecture: "riscv64" });
-  assert.ok(
-    odd.includes("FAIL  platform: docker's VM is riscv64, which no pool runs"),
+  assert.match(
+    advertised(
+      await doctored(
+        t,
+        {},
+        {
+          pool: {
+            ...fixturePool,
+            capabilities: [...fixturePool.capabilities, "Platform:MacOS:Arm64"],
+            host: true,
+          },
+          runner: { capabilities: ["Tool:Xcode"] },
+        },
+      ),
+    ) ?? "",
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:MacOS:Arm64, Tool:Xcode, Agent:Claude on each poll: docker's VM's platform, the Mac's, the agents .+ can run, and its capabilities$/u,
+  );
+  assert.equal(
+    advertised(await doctored(t, { architecture: "riscv64" })),
+    "FAIL  capabilities: docker's VM is riscv64, which no pool runs",
   );
 });
 

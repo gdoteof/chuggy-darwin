@@ -25,7 +25,8 @@ import {
   registeredPersonalFixture,
 } from "./register.fixture.mjs";
 import { poolRuntimeDirectory } from "./runner.mjs";
-import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
+import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
+import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
  * @typedef {object} Machine
@@ -89,10 +90,27 @@ async function called(argv, machine = {}) {
   return { status, out: out.join("\n"), err: err.join("\n") };
 }
 
-/** @param {import("node:test").TestContext} t */
-async function home(t) {
+/**
+ * A Mac's home, with the runner's file written before `register` as the
+ * README has it, unless `runner` is named and undefined.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {{runner?: Record<string, unknown> | undefined}} [documents] what the runner's file sets beside its credential and limits
+ */
+async function home(t, documents = {}) {
   const directory = await mkdtemp(join(tmpdir(), "chuggy-darwin-home-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
+  const { runner = {} } = documents;
+  if (!("runner" in documents) || documents.runner !== undefined)
+    await ownerOnly(
+      runnerPaths(directory).config,
+      JSON.stringify({
+        claudeTokenFile: join(directory, ".claude-token"),
+        timeoutSecsMax: 3600,
+        outputBytesMax: 65536,
+        ...runner,
+      }),
+    );
   return directory;
 }
 
@@ -317,6 +335,52 @@ test("register --host declares the Mac's own platform after the VM's and writes 
       ),
     ),
     { ...declared, host: true },
+  );
+});
+
+test("register declares the agents runner.json can run, Claude where an images entry declares it or with --host, once beside a --capability naming it", async (t) => {
+  const vm = "Platform:Linux:Arm64";
+  const claude = { images: [{ image: "x", capabilities: ["Agent:Claude"] }] };
+  for (const [runner, argv, declared] of /** @type {const} */ ([
+    [claude, [], [vm, "Agent:Claude"]],
+    [claude, ["--capability", "Agent:Claude"], [vm, "Agent:Claude"]],
+    [{}, ["--host"], [vm, "Platform:MacOS:Arm64", "Agent:Claude"]],
+    [{}, [], [vm]],
+  ])) {
+    const answer = answeringFetch(201, {
+      ...registered,
+      capabilities: declared,
+    });
+    const { status, err } = await called([...registerArgv, ...argv], {
+      home: await home(t, { runner }),
+      fetch: answer.fetch,
+    });
+    assert.equal(status, 0, err);
+    assert.deepEqual(
+      JSON.parse(String(answer.requests[0].init.body)).capabilities,
+      declared,
+    );
+    assert.equal(err, "");
+  }
+});
+
+test("register with no runner.json declares the VM's platform and each --capability, says in one line that runner.json declared no agents, and goes on", async (t) => {
+  const declared = ["Platform:Linux:Arm64", "Tool:Xcode"];
+  const answer = answeringFetch(201, { ...registered, capabilities: declared });
+  const { status, out, err } = await called(
+    [...registerArgv, "--capability", "Tool:Xcode"],
+    { home: await home(t, { runner: undefined }), fetch: answer.fetch },
+  );
+  assert.equal(status, 0, err);
+  assert.deepEqual(
+    JSON.parse(String(answer.requests[0].init.body)).capabilities,
+    declared,
+  );
+  assert.match(out, /^wrote .*newtenant\.arbbot\.shame\.json;/u);
+  assert.equal(err.split("\n").length, 1);
+  assert.match(
+    err,
+    /^runner\.json declared no agents, since it could not be read: ENOENT/u,
   );
 });
 
@@ -585,6 +649,28 @@ test("status and stop reach this pool's service, and status names each workload'
   assert.equal(stop.status, 0);
   assert.equal(stop.out, "stopped asg-1");
   assert.deepEqual(stopped, ["asg-1"]);
+});
+
+/**
+ * Catches `status` or `stop` finding what a run advertises, which neither
+ * names, and refused where a run would be.
+ */
+test("status and stop answer on a VM no pool runs on, since neither polls", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const { stopped } = await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+  );
+  const machine = { home, architecture: "riscv64" };
+  const status = await called(["status", "--pool", poolFile], machine);
+  assert.equal(status.status, 0, status.err);
+  assert.match(status.out, /^service: running$/mu);
+  const stop = await called(["stop", "asg-1", "--pool", poolFile], machine);
+  assert.equal(stop.status, 0, stop.err);
+  assert.deepEqual(stopped, ["asg-1"]);
+  const once = await called(["once", "--pool", poolFile], machine);
+  assert.equal(once.status, 1);
+  assert.match(once.err, /docker's VM is riscv64, which no pool runs/u);
 });
 
 test("status names a job held for room and what it waits for, and the memory of Colima's VM it waits on", async (t) => {
@@ -856,7 +942,7 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   );
   assert.match(
     out,
-    /^ok {4}platform: docker's VM runs Platform:Linux:Arm64, as the pool registered$/mu,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64 on each poll: /mu,
   );
   assert.match(err, /^warn {2}launchd agent: none; install-agent writes /mu);
   assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);

@@ -501,6 +501,31 @@ test("what the VM keeps free of its disk and of its memory, and what it reserves
   }
 });
 
+test("a file may declare what its Mac meets, read as written, and a platform, a token no requirement can name, or one named twice is refused, naming where", async (t) => {
+  const { paths } = await runnerFixture(t, {
+    runner: { capabilities: ["gpu", "Tool:Xcode"] },
+  });
+  assert.deepEqual((await runnerConfig(paths.config)).capabilities, [
+    "gpu",
+    "Tool:Xcode",
+  ]);
+  for (const [capabilities, why] of [
+    [
+      ["gpu", "Platform:Linux:Arm64"],
+      /capabilities\.1 is a platform, which the runner finds of this machine/u,
+    ],
+    [["gpu", "gpu"], /capabilities\.1 is named by an earlier entry/u],
+    [["no spaces"], /capabilities\.0 /u],
+  ]) {
+    const refused = await runnerFixture(t, { runner: { capabilities } });
+    await assert.rejects(
+      runnerConfig(refused.paths.config),
+      why,
+      JSON.stringify(capabilities),
+    );
+  }
+});
+
 test("a directory is not a runner configuration", async (t) => {
   const { paths } = await runnerFixture(t, { runner: undefined });
   await mkdir(paths.config, { recursive: true, mode: 0o700 });

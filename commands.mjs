@@ -23,6 +23,7 @@ import {
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
 import {
+  registerAgents,
   registerAskedChecked,
   registerPoolDirectory,
   registerPoolFileWritten,
@@ -56,7 +57,11 @@ import {
   runnerSetup,
   scratchRemovedOnSignal,
 } from "./runner.mjs";
-import { runnerConfigLimits } from "./runnerConfig.mjs";
+import {
+  runnerClaudeHanded,
+  runnerConfig,
+  runnerConfigLimits,
+} from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
@@ -89,8 +94,9 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
                           their personal runner's file; it declares the VM's
-                          platform, with --host this Mac's too, and each
-                          --capability, which the token must permit
+                          platform, with --host this Mac's too, the agents
+                          runner.json can run, and each --capability, which
+                          the token must permit
   run                     run the pool until the plane denies it
   once                    one pass, then wait for what it placed to start
   status                  this pool's limits and containers, and what the
@@ -103,8 +109,11 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
 
 The pool file is --pool, or ${poolFileVariable}.`;
 
-/** @param {CliCall} call */
-async function started(call) {
+/**
+ * @param {CliCall} call
+ * @param {{polls: boolean}} [command] `polls: false` for a command that never polls
+ */
+async function started(call, command = { polls: true }) {
   const setup = await runnerSetup(call.poolFile, call.host.home);
   const runner = await runnerParts(setup, {
     uid: call.host.uid,
@@ -114,6 +123,7 @@ async function started(call) {
     colima: call.host.colima,
     tokens: call.host.tokens,
     fetch: call.host.fetch,
+    polls: command.polls,
   });
   return { setup, runner };
 }
@@ -169,7 +179,7 @@ async function once(call) {
 
 /** @param {CliCall} call */
 async function status(call) {
-  const { setup, runner } = await started(call);
+  const { setup, runner } = await started(call, { polls: false });
   const containers = await runner.backend.containers();
   const answered =
     /** @type {{inFlight: import("@chuggy/worker-core/containerBackend.mjs").InFlightPlacement[]} | undefined} */ (
@@ -202,7 +212,7 @@ async function stop(call) {
     call.host.err(usage);
     return 2;
   }
-  const { runner } = await started(call);
+  const { runner } = await started(call, { polls: false });
   const answered =
     /** @type {{stopped?: string, evidence?: string, refused?: string}} */ (
       (await controlAsked(runner.socket, { op: "stop", assignment })) ??
@@ -335,7 +345,8 @@ async function installAgent(call) {
  * redeems a member's personal token, which names no pool. The platform it
  * declares is docker's VM's, which can differ from the Mac's, so docker is
  * asked once the ask is found sound, and must answer before the token is spent.
- * `--host` declares the Mac's own platform beside it.
+ * `--host` declares the Mac's own platform beside it. It declares the agents
+ * the runner's file can run, and none, saying so, where it cannot be read.
  *
  * @param {CliHost} host
  * @param {Omit<import("@chuggy/worker-core/register.mjs").RegisterAsked, "capabilities"> & {host?: boolean | undefined, capability?: string[] | undefined}} asked each `--capability` once per token
@@ -355,16 +366,19 @@ async function register(host, { capability, host: hosted, ...named }) {
     return 2;
   }
   const { arch } = await dockerMachine(host.engine ?? runnerEngine());
+  const { pools, config } = runnerPaths(host.home);
+  const agents = await registerAgentsRead(config, hosted === true);
   const requested = registerRequest(asked, {
     hostname: host.hostname,
     arch,
     ...(hosted === true ? { hosted: [/** @type {string} */ (platform)] } : {}),
+    agents: "agents" in agents ? agents.agents : [],
   });
   if ("refused" in requested) {
     host.err(requested.refused);
     return 2;
   }
-  const { pools } = runnerPaths(host.home);
+  if ("none" in agents) host.err(agents.none);
   await registerPoolDirectory(pools);
   const pool = await registerRedeemed(requested.request, host.fetch);
   const { file, replaced } = await registerPoolFileWritten(
@@ -396,6 +410,29 @@ async function register(host, { capability, host: hosted, ...named }) {
   host.out(`  chuggy-darwin doctor --pool ${shellQuoted(file)}`);
   host.out(`  chuggy-darwin install-agent --pool ${shellQuoted(file)}`);
   return 0;
+}
+
+/**
+ * The agents the runner's file can run, as a registration declares them, or
+ * why it declares none where the file cannot be read, which a registration
+ * goes on without.
+ *
+ * @param {string} file the runner's file
+ * @param {boolean} hostJobs whether the pool runs jobs on the Mac itself
+ * @returns {Promise<{agents: string[]} | {none: string}>}
+ */
+async function registerAgentsRead(file, hostJobs) {
+  let config;
+  try {
+    config = await runnerConfig(file);
+  } catch (failure) {
+    return {
+      none: `runner.json declared no agents, since it could not be read: ${failure instanceof Error ? failure.message : String(failure)}`,
+    };
+  }
+  return {
+    agents: registerAgents(runnerClaudeHanded(config), config.images, hostJobs),
+  };
 }
 
 /** The options only `mcp` takes. */

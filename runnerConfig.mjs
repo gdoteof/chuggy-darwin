@@ -30,6 +30,7 @@ import {
 import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
 import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
+import { registerDeclaredSchema } from "@chuggy/worker-core/register.mjs";
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
@@ -130,6 +131,12 @@ export const runnerConfigSchema = z
      * owner declares it meets: the first meeting every one the job names.
      */
     images: ownerImagesSchema.default([]),
+    /**
+     * What this Mac meets beside its platforms and the agents the file can
+     * run, which each pool's service advertises in place of what
+     * `--capability` declared when its pool was registered.
+     */
+    capabilities: registerDeclaredSchema.optional(),
     /**
      * Limits of a pool's own, by its pool file's name without `.json`, as
      * `runnerPoolName` names it.
