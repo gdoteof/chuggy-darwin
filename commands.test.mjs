@@ -260,6 +260,37 @@ test("doctor's first line names the copy speaking and the Node it runs under", a
   );
 });
 
+/**
+ * Catches a doctor whose poll names no copy, or another, which the plane
+ * records as what the runner runs.
+ */
+test("doctor's poll of the plane names this copy", async (t) => {
+  /** @type {(string | null)[]} */
+  const named = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ _url, /** @type {RequestInit} */ init) => {
+      named.push(new globalThis.Headers(init.headers).get(workerRunnerHeader));
+      return globalThis.Response.json({
+        assignments: [],
+        sessions: [],
+        stop: [],
+      });
+    },
+  );
+  const { home, poolFile } = await runnerFixture(t);
+  const { out } = await called(["doctor", "--pool", poolFile], {
+    home,
+    tokens: {
+      acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+      invalidate: () => undefined,
+    },
+  });
+  assert.match(out, /^ok {4}plane: .* answered a poll$/mu);
+  assert.deepEqual(named, [`chuggy-darwin/${copyVersion}`]);
+});
+
 test("doctor names a pool's file as a pool's, by its tenant, project and pool", async (t) => {
   const { home: machine } = await runnerFixture(t);
   const { fetch } = answeringFetch(201, registered);
