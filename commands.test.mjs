@@ -742,7 +742,7 @@ test("registering a pool its agent here runs says the agent stops until restarte
   );
 });
 
-test("registering a personal runner its agent here runs says so of the runner, and restarts the agent labelled for its file", async (t) => {
+test("registering a personal runner its agent here runs says the agent runs the earlier registration, and restarts the agent labelled for its file", async (t) => {
   const machine = await home(t);
   const argv = [...registerArgv, "--personal"];
   const { fetch } = answeringFetch(201, registeredPersonal);
@@ -768,7 +768,7 @@ test("registering a personal runner its agent here runs says so of the runner, a
   assert.equal(
     again.out,
     [
-      `replaced ${file}; chuggy denies this personal runner's earlier registration, so its agent stops until it is restarted:`,
+      `replaced ${file}; its agent runs the registration it read when it started until it is restarted:`,
       `  launchctl kickstart -k gui/${String(process.getuid?.())}/chuggy-darwin.${personalBase}`,
     ].join("\n"),
   );

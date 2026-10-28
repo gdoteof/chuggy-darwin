@@ -374,7 +374,9 @@ async function register(host, { capability, host: hosted, ...named }) {
   ).catch(() => undefined);
   if (agent !== undefined && launchAgentPoolFile(agent) === file) {
     host.out(
-      `${verb} ${file}; chuggy denies ${poolIdentityPersonal(pool) ? "this personal runner's" : "the pool's"} earlier registration, so its agent stops until it is restarted:`,
+      poolIdentityPersonal(pool)
+        ? `${verb} ${file}; its agent runs the registration it read when it started until it is restarted:`
+        : `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
     );
     host.out(`  ${launchAgentRestart({ uid: host.uid, label })}`);
     return 0;

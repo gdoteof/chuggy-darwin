@@ -36,7 +36,7 @@ A member's personal runner runs only that member's work, in the projects they al
 chuggy-darwin register --api <chuggy's origin> --token=<token> --personal
 ```
 
-It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member has one personal runner in a tenant, so registering again, from here or any machine, replaces it as registering a pool again does. Every other command takes its file as it takes a pool's.
+It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over; the registration it held before stays in chuggy, offline once nothing runs it, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
 ## Run
 
@@ -101,7 +101,7 @@ chuggy-darwin install-agent --pool <file>
 
 This writes `~/Library/LaunchAgents/chuggy-darwin.<pool file less .json>.plist`, which runs `run` for that pool file under the `node` and with the PATH of this shell, since launchd's own PATH finds no Homebrew docker; it takes the link on PATH, such as `/opt/homebrew/bin/node`, which an upgrade keeps. It takes no other variable, so a `DOCKER_HOST` or `DOCKER_CONTEXT` set in the shell does not reach the agent, which uses docker's current context. It prints how to load it. launchd starts the agent when the user logs in to the Mac's desktop, and again after any exit but 0, after a pause, so an agent started before Colima tries again; a pool the plane denied stays down. It runs only while the user is logged in. Its output goes to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<pool file less .json>.log`. `brew services start colima` starts Colima at login too.
 
-Registering a pool its agent serves again replaces the registration the agent holds, so `register` prints the `launchctl kickstart` that restarts it.
+An agent runs the registration it read when it started, so registering again a pool or personal runner its agent serves prints the `launchctl kickstart` that restarts it on the new one.
 
 ## Tools for your coding agent
 
