@@ -4,7 +4,8 @@
  * suite decides how long one takes and how it ends.
  */
 
-import { readFileSync, writeSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { dirname } from "node:path";
 
@@ -316,14 +317,16 @@ export function fakeEngine() {
       engineCall.signal?.throwIfAborted();
       return Promise.race([answer(state, call), aborted(engineCall.signal)]);
     },
-    execToFd: async (argv, fd) => {
+    execTail: async (argv) => {
       state.calls.push({ argv: [...argv], environment: {} });
       const reference = argv.at(-1) ?? "";
       const container = found(state, reference);
-      if (state.unreachable) return failed(unreachable);
-      if (state.logsFail || container === undefined) return missing(reference);
-      writeSync(fd, `the log of ${container.name}\n`);
-      return answered();
+      const none = { tail: Buffer.alloc(0), cut: false, lines: 0 };
+      if (state.unreachable) return { ...failed(unreachable), ...none };
+      if (state.logsFail || container === undefined)
+        return { ...missing(reference), ...none };
+      const tail = Buffer.from(`the log of ${container.name}\n`);
+      return { ...answered(), tail, cut: false, lines: 1 };
     },
   };
   return { engine, state };
