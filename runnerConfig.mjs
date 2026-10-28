@@ -30,6 +30,7 @@ import {
   claudeCredentialSetting,
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
+import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
 import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 import { registerDeclaredSchema } from "@chuggy/worker-core/register.mjs";
@@ -86,7 +87,7 @@ const environmentSchema = z
 const credentialFileSchema = z
   .string()
   .refine((file) => isAbsolute(file), { error: "must be an absolute path" })
-  .refine((file) => !/[,\r\n]/u.test(file), {
+  .refine((file) => bindMountNameable(file), {
     error: "cannot be named in a bind mount",
   });
 
